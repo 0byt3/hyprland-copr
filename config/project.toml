@@ -1,0 +1,26 @@
+schema_version = 1
+
+[target]
+release = 44
+architecture = "x86_64"
+image = "registry.fedoraproject.org/fedora:44"
+repositories = [
+    "fedora",
+    "updates",
+]
+
+[pipeline]
+release = 1
+max_candidates = 10
+state_directory = ".state"
+build_image = "hyprland-copr-builder:44"
+lua_series = "5.5"
+
+[copr]
+owner = "byte0"
+project = "hyprland"
+chroot = "fedora-44-x86_64"
+publish = true
+exclusive_writer = true
+poll_seconds = 30
+timeout_seconds = 18000

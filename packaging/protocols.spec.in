@@ -1,0 +1,35 @@
+Name:           hyprland-protocols
+Version:        @VERSION@
+Release:        @RELEASE@%{?dist}
+Summary:        Hyprland protocol definitions
+License:        BSD-3-Clause
+URL:            https://github.com/hyprwm/hyprland-protocols
+Source0:        hyprland-protocols-@VERSION@.tar.gz
+BuildArch:      noarch
+@BUILD_REQUIRES@
+@PROTOCOL_MACROS@
+BuildRequires:  coreutils
+
+%description
+Hyprland protocol definitions from a compatible pinned source snapshot
+or stable release.
+
+%prep
+%autosetup
+
+%build
+@PROTOCOL_BUILD@
+
+%install
+@PROTOCOL_INSTALL@
+%check
+export PKG_CONFIG_LIBDIR=%{buildroot}%{_datadir}/pkgconfig
+unset PKG_CONFIG_PATH PKG_CONFIG_SYSROOT_DIR
+test "$(pkg-config --modversion hyprland-protocols)" = "%{version}"
+test "$(realpath -m "$(pkg-config --variable=pkgdatadir hyprland-protocols)")" = "%{_datadir}/hyprland-protocols"
+test -s %{buildroot}%{_datadir}/hyprland-protocols/protocols/hyprland-toplevel-export-v1.xml
+
+%files
+%license LICENSE*
+%{_datadir}/hyprland-protocols
+%{_datadir}/pkgconfig/hyprland-protocols.pc

@@ -1,0 +1,58 @@
+%global debug_package %{nil}
+
+Name:           glaze
+Version:        @VERSION@
+Release:        @RELEASE@%{?dist}
+Summary:        Header-only C++23 JSON and serialization library
+License:        MIT
+URL:            https://github.com/stephenberry/glaze
+Source0:        glaze-@VERSION@.tar.gz
+Source1:        glaze-smoke.cpp
+Source2:        glaze-smoke.cmake
+BuildArch:      noarch
+@BUILD_REQUIRES@
+BuildRequires:  cmake-rpm-macros
+
+%description
+Upstream Glaze sources. The header-only library is provided by glaze-devel.
+
+%package devel
+Summary:        Headers and CMake metadata for Glaze
+Requires:       cmake-filesystem
+
+%description devel
+C++23 headers and versioned CMake metadata for building Glaze consumers.
+There is no shared library or runtime package.
+
+%prep
+%autosetup
+
+%build
+export SOURCE_DATE_EPOCH=@EPOCH@
+%cmake -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+    -DBUILD_TESTING=OFF \
+    -Dglaze_DEVELOPER_MODE=OFF -Dglaze_ENABLE_FUZZING=OFF \
+    -Dglaze_BUILD_EXAMPLES=OFF -Dglaze_EETF_FORMAT=OFF \
+    -Dglaze_ENABLE_SSL=OFF -Dglaze_ENABLE_REFLECTION26=OFF \
+    -Dglaze_INSTALL=ON -Dglaze_INSTALL_CMAKEDIR:STRING=share/cmake/glaze \
+    --trace-expand --trace-format=json-v1 --trace-redirect=%{_topdir}/trace.jsonl
+%cmake_build
+
+%install
+%cmake_install
+
+%check
+mkdir -p .glaze-smoke
+cp %{SOURCE1} .glaze-smoke/main.cpp
+cp %{SOURCE2} .glaze-smoke/CMakeLists.txt
+cmake -S .glaze-smoke -B .glaze-smoke/build -G Ninja \
+    -Dglaze_DIR=%{buildroot}%{_datadir}/cmake/glaze \
+    -DEXPECTED_GLAZE_VERSION=%{version}
+cmake --build .glaze-smoke/build
+.glaze-smoke/build/glaze-smoke
+
+%files devel
+%license LICENSE
+%{_includedir}/glaze
+%{_datadir}/cmake/glaze

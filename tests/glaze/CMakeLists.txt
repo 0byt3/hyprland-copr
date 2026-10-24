@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.21)
+project(glaze-smoke LANGUAGES CXX)
+find_package(glaze ${EXPECTED_GLAZE_VERSION} EXACT CONFIG REQUIRED)
+add_executable(glaze-smoke main.cpp)
+target_link_libraries(glaze-smoke PRIVATE glaze::glaze)
+target_compile_features(glaze-smoke PRIVATE cxx_std_23)

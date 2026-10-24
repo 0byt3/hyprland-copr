@@ -1,0 +1,3 @@
+# Fedora-oriented hyprlock policy; never replace the shared system-auth stack.
+auth       include      system-auth
+account    include      system-auth

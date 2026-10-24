@@ -1,0 +1,52 @@
+Name:           @NAME@
+Version:        @VERSION@
+Release:        @RELEASE@%{?dist}
+Summary:        @SUMMARY@
+License:        @LIBRARY_LICENSE@
+URL:            https://github.com/hyprwm/@UPSTREAM@
+Source0:        @NAME@-@VERSION@.tar.gz
+@BUILD_REQUIRES@
+BuildRequires:  cmake-rpm-macros
+Provides:       %{name}-libs = %{version}-%{release}
+Provides:       %{name}-libs%{?_isa} = %{version}-%{release}
+@RUNTIME_PROVIDES@
+
+%description
+@SUMMARY@.
+Built as part of a coordinated Fedora Hyprland stack.
+
+%package devel
+Summary:        Development files for %{name}
+Requires:       %{name}%{?_isa} = %{version}-%{release}
+@DEVEL_PROVIDES@
+
+%description devel
+Headers and build metadata for %{name}.
+
+%prep
+%autosetup
+
+%build
+export SOURCE_DATE_EPOCH=@EPOCH@
+%cmake -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+    -DBUILD_TESTING=OFF \
+    --trace-expand --trace-format=json-v1 --trace-redirect=%{_topdir}/trace.jsonl
+%cmake_build
+
+%install
+%cmake_install
+
+%check
+@CHECK@
+
+%files
+%license @LIBRARY_LICENSE_FILES@
+%{_libdir}/lib*.so.*
+@RUNTIME_FILES@
+
+%files devel
+%{_includedir}/*
+%{_libdir}/lib*.so
+%{_libdir}/pkgconfig/*.pc
+@DEVEL_FILES@

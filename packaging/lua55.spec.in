@@ -1,0 +1,141 @@
+%global lua_abi 5.5
+
+Name:           lua55
+Version:        @VERSION@
+Release:        @RELEASE@%{?dist}
+Summary:        Co-installable Lua 5.5 interpreter and compiler
+License:        MIT
+URL:            https://www.lua.org/
+# The pipeline must vendor this verified upstream archive in the SRPM.
+# No network access is needed by any RPM build phase.
+Source0:        lua-@VERSION@.tar.gz
+
+BuildRequires:  gcc
+BuildRequires:  make
+BuildRequires:  pkgconf-pkg-config
+@BUILD_REQUIRES@
+
+Requires:       %{name}-libs%{?_isa} = %{version}-%{release}
+
+%description
+Lua is a lightweight, embeddable scripting language. This package provides
+versioned lua5.5 and luac5.5 commands without replacing Fedora's system Lua.
+
+%package libs
+Summary:        Co-installable Lua 5.5 shared runtime library
+
+%description libs
+The Lua 5.5 shared library with the independent liblua5.5.so.0 SONAME and
+versioned Lua and C module directories.
+
+%package devel
+Summary:        Development files for the co-installable Lua 5.5 runtime
+Requires:       %{name}-libs%{?_isa} = %{version}-%{release}
+
+%description devel
+Headers in lua5.5, the liblua5.5 linker name, and pkgconfig(lua55) metadata
+for embedding Lua 5.5 without using Fedora's generic Lua development files.
+
+%prep
+%autosetup -n lua-%{version}
+# Keep installed header defaults identical to the compiled runtime defaults.
+# Restrict system module paths to this ABI, respecting Fedora's libdir.
+sed -i \
+    -e 's|^#define LUA_ROOT[[:space:]].*|#define LUA_ROOT        "%{_prefix}/"|' \
+    -e 's|^#define LUA_CDIR[[:space:]]*LUA_ROOT "lib/lua/".*|#define LUA_CDIR        "%{_libdir}/lua/" LUA_VDIR "/"|' \
+    src/luaconf.h
+grep -F '#define LUA_ROOT        "%{_prefix}/"' src/luaconf.h
+grep -F '#define LUA_CDIR        "%{_libdir}/lua/" LUA_VDIR "/"' src/luaconf.h
+
+%build
+%{set_build_flags}
+# Upstream only builds a static archive. Build PIC objects first, then use
+# that private archive to construct a real shared library. The archive is
+# only an intermediate and is never installed or included in an RPM.
+# POSIX and dlopen are enabled explicitly. The optional readline facility
+# is deliberately disabled, avoiding a hidden dlopen-only runtime dependency.
+%make_build -C src liblua.a lua.o luac.o \
+    CC="%{__cc}" \
+    CFLAGS="$CFLAGS -fPIC -DLUA_USE_POSIX -DLUA_USE_DLOPEN"
+%{__cc} $CFLAGS $LDFLAGS -shared \
+    -Wl,-soname,liblua%{lua_abi}.so.0 \
+    -o src/liblua%{lua_abi}.so.0 \
+    -Wl,--whole-archive src/liblua.a -Wl,--no-whole-archive \
+    -lm -ldl
+%{__cc} $CFLAGS $LDFLAGS -o src/lua%{lua_abi} src/lua.o \
+    -Lsrc -l:liblua%{lua_abi}.so.0 -lm -ldl
+# luac uses private Lua internals and must not depend on their visibility
+# in the public shared library.
+%{__cc} $CFLAGS $LDFLAGS -o src/luac%{lua_abi} \
+    src/luac.o src/liblua.a -lm -ldl
+
+%install
+install -Dpm 0755 src/lua%{lua_abi} \
+    %{buildroot}%{_bindir}/lua%{lua_abi}
+install -Dpm 0755 src/luac%{lua_abi} \
+    %{buildroot}%{_bindir}/luac%{lua_abi}
+install -Dpm 0755 src/liblua%{lua_abi}.so.0 \
+    %{buildroot}%{_libdir}/liblua%{lua_abi}.so.0
+ln -s liblua%{lua_abi}.so.0 \
+    %{buildroot}%{_libdir}/liblua%{lua_abi}.so
+install -d %{buildroot}%{_includedir}/lua%{lua_abi}
+install -pm 0644 src/lua.h src/luaconf.h src/lualib.h src/lauxlib.h src/lua.hpp \
+    %{buildroot}%{_includedir}/lua%{lua_abi}/
+install -Dpm 0644 doc/lua.1 \
+    %{buildroot}%{_mandir}/man1/lua%{lua_abi}.1
+install -Dpm 0644 doc/luac.1 \
+    %{buildroot}%{_mandir}/man1/luac%{lua_abi}.1
+install -d \
+    %{buildroot}%{_libdir}/lua/%{lua_abi} \
+    %{buildroot}%{_datadir}/lua/%{lua_abi} \
+    %{buildroot}%{_libdir}/pkgconfig
+cat > %{buildroot}%{_libdir}/pkgconfig/lua55.pc <<'EOF'
+prefix=%{_prefix}
+exec_prefix=${prefix}
+libdir=%{_libdir}
+includedir=%{_includedir}/lua%{lua_abi}
+INSTALL_LMOD=%{_datadir}/lua/%{lua_abi}
+INSTALL_CMOD=%{_libdir}/lua/%{lua_abi}
+
+Name: Lua 5.5
+Description: Co-installable Lua 5.5 language engine
+Version: %{version}
+Libs: -L${libdir} -llua%{lua_abi}
+Libs.private: -lm -ldl
+Cflags: -I${includedir}
+EOF
+
+%check
+export LD_LIBRARY_PATH="$PWD/src"
+src/lua%{lua_abi} -E -e '
+    assert(_VERSION == "Lua 5.5")
+    assert(table.create)
+    assert(package.path:find("%{_datadir}/lua/5.5/?.lua", 1, true))
+    assert(package.cpath:find("%{_libdir}/lua/5.5/?.so", 1, true))
+    assert(not package.path:find("/5.4/", 1, true))
+    assert(not package.cpath:find("/5.4/", 1, true))
+'
+printf '%s\n' 'assert(_VERSION == "Lua 5.5"); assert(6 * 7 == 42)' > smoke.lua
+src/luac%{lua_abi} -p smoke.lua
+src/luac%{lua_abi} -o smoke.luac smoke.lua
+src/lua%{lua_abi} -E smoke.luac
+PKG_CONFIG_LIBDIR=%{buildroot}%{_libdir}/pkgconfig \
+    pkg-config --exact-version=%{version} lua55
+
+%files
+%doc README doc/readme.html
+%{_bindir}/lua%{lua_abi}
+%{_bindir}/luac%{lua_abi}
+%{_mandir}/man1/lua%{lua_abi}.1*
+%{_mandir}/man1/luac%{lua_abi}.1*
+
+%files libs
+%license doc/readme.html
+%{_libdir}/liblua%{lua_abi}.so.0
+%dir %{_libdir}/lua/%{lua_abi}
+%dir %{_datadir}/lua/%{lua_abi}
+
+%files devel
+%{_includedir}/lua%{lua_abi}/
+%{_libdir}/liblua%{lua_abi}.so
+%{_libdir}/pkgconfig/lua55.pc

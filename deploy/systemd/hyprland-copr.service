@@ -1,0 +1,10 @@
+[Unit]
+Description=Local Hyprland RPM validation and guarded COPR publication
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/hyprland-copr
+ExecStart=/usr/bin/python3 -m ci.release
+TimeoutStartSec=infinity
+UMask=0077
+NoNewPrivileges=yes

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run local Hyprland package validation every six hours
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:19:00
+RandomizedDelaySec=5m
+Persistent=true
+Unit=hyprland-copr.service
+
+[Install]
+WantedBy=timers.target

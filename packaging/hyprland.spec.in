@@ -1,0 +1,75 @@
+# LTO is incompatible with the upstream plugin ABI.
+%global _lto_cflags %{nil}
+
+Name:           hyprland
+Version:        @VERSION@
+Release:        @RELEASE@%{?dist}
+Summary:        Dynamic tiling Wayland compositor
+License:        BSD-3-Clause AND BSD-2-Clause
+URL:            https://github.com/hyprwm/Hyprland
+Source0:        hyprland-@VERSION@.tar.gz
+@BUILD_REQUIRES@
+BuildRequires:  cmake-rpm-macros
+BuildRequires:  python3
+BuildRequires:  make
+Requires:       lua55-libs%{?_isa} >= 5.5
+Provides:       wayland-compositor
+Provides:       bundled(udis86) = @UDIS_VERSION@
+
+%description
+Stable upstream Hyprland, built and validated against a coordinated
+Fedora stack.
+
+%package devel
+Summary:        Hyprland plugin headers and development metadata
+Requires:       %{name}%{?_isa} = %{version}-%{release}
+
+%description devel
+Headers and metadata for building plugins for this exact Hyprland version.
+Plugins built for other Hyprland versions must be rebuilt.
+
+%prep
+%autosetup
+# Account for the bundled disassembler's license in the installed RPM.
+test -f subprojects/udis86/LICENSE
+cp subprojects/udis86/LICENSE LICENSE.udis86
+
+%build
+export SOURCE_DATE_EPOCH=@EPOCH@
+export GIT_COMMIT_HASH=@COMMIT@
+export GIT_TAG=v@VERSION@
+export GIT_BRANCH=release
+export GIT_DIRTY=clean
+%cmake -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+    -DBUILD_TESTING=OFF -DWITH_TESTS=OFF \
+    -DUSE_TRACY=OFF -DNO_UWSM=ON \
+    --trace-expand --trace-format=json-v1 --trace-redirect=%{_topdir}/trace.jsonl
+%cmake_build
+
+%install
+%cmake_install
+# Split headers and metadata from all installed runtime/session assets.
+find %{buildroot} -type f -o -type l | \
+    sed 's|^%{buildroot}||' | \
+    awk '!/^\/usr\/include\// && !/\/pkgconfig\// && !/\/licenses\// {
+        if ($0 ~ /\/man[0-9]\//) print $0 "*"; else print
+    }' > runtime.list
+
+%check
+mkdir -p .smoke-home/config .smoke-home/runtime
+chmod 700 .smoke-home/runtime
+export HOME="$PWD/.smoke-home"
+export XDG_CONFIG_HOME="$HOME/config"
+export XDG_RUNTIME_DIR="$HOME/runtime"
+unset WAYLAND_DISPLAY DISPLAY DBUS_SESSION_BUS_ADDRESS HYPRLAND_INSTANCE_SIGNATURE
+timeout 10 %{buildroot}%{_bindir}/Hyprland --version
+readelf -d %{buildroot}%{_bindir}/Hyprland | grep 'liblua5.5.so.0'
+! readelf -d %{buildroot}%{_bindir}/Hyprland | grep 'liblua-5.4'
+
+%files -f runtime.list
+%license LICENSE LICENSE.udis86
+
+%files devel
+%{_includedir}/*
+%{_datadir}/pkgconfig/hyprland.pc

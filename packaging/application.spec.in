@@ -1,0 +1,50 @@
+Name:           @NAME@
+Version:        @VERSION@
+Release:        @RELEASE@%{?dist}
+Summary:        @APP_SUMMARY@
+License:        @APP_LICENSE@
+URL:            https://github.com/hyprwm/@NAME@
+Source0:        @NAME@-@VERSION@.tar.gz
+@EXTRA_SOURCES@
+@BUILD_REQUIRES@
+BuildRequires:  cmake-rpm-macros
+BuildRequires:  systemd-rpm-macros
+BuildRequires:  python3
+@RUNTIME_REQUIRES@
+
+%description
+@APP_SUMMARY@.
+Built with the selected Fedora Hyprland dependency stack.
+
+%prep
+%autosetup
+@APP_PREP@
+
+%build
+export SOURCE_DATE_EPOCH=@EPOCH@
+%cmake -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+    -DBUILD_TESTING=OFF \
+    @APP_OPTIONS@ \
+    --trace-expand --trace-format=json-v1 --trace-redirect=%{_topdir}/trace.jsonl
+%cmake_build
+@APP_BUILD_CHECK@
+
+%install
+%cmake_install
+@APP_INSTALL@
+
+%check
+mkdir -p .smoke-home/config .smoke-home/runtime
+chmod 700 .smoke-home/runtime
+export HOME="$PWD/.smoke-home"
+export XDG_CONFIG_HOME="$HOME/config"
+export XDG_RUNTIME_DIR="$HOME/runtime"
+unset WAYLAND_DISPLAY DISPLAY DBUS_SESSION_BUS_ADDRESS
+timeout 10 %{buildroot}@APP_BINARY@ --help
+timeout 10 %{buildroot}@APP_BINARY@ --version
+
+%files
+%license @APP_LICENSE_FILES@
+%doc README.md
+@APP_FILES@

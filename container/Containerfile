@@ -1,0 +1,31 @@
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf --repo=fedora --repo=updates -y install \
+        binutils \
+        cmake \
+        coreutils \
+        cpio \
+        createrepo_c \
+        dnf5-plugins \
+        elfutils \
+        findutils \
+        gcc \
+        gcc-c++ \
+        git \
+        gzip \
+        make \
+        ninja-build \
+        patch \
+        pkgconf-pkg-config \
+        python3 \
+        python3-rpm \
+        redhat-rpm-config \
+        rpm-build \
+        rpmdevtools \
+        rpmlint \
+        shadow-utils \
+        tar \
+        util-linux \
+        which \
+        xz \
+    && dnf clean all
+ENV LANG=C.UTF-8

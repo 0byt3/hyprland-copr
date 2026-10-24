@@ -1,0 +1,29 @@
+Name:           hyprwayland-scanner
+Version:        @VERSION@
+Release:        @RELEASE@%{?dist}
+Summary:        C++ Wayland protocol scanner
+License:        BSD-3-Clause
+URL:            https://github.com/hyprwm/hyprwayland-scanner
+Source0:        hyprwayland-scanner-@VERSION@.tar.gz
+@BUILD_REQUIRES@
+BuildRequires:  cmake-rpm-macros
+
+%description
+Protocol scanner and build metadata for the Hyprland stack.
+
+%prep
+%autosetup
+
+%build
+%cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+    --trace-expand --trace-format=json-v1 --trace-redirect=%{_topdir}/trace.jsonl
+%cmake_build
+
+%install
+%cmake_install
+
+%files
+%license LICENSE*
+%{_bindir}/hyprwayland-scanner
+%{_libdir}/pkgconfig/*.pc
+%{_libdir}/cmake/hyprwayland-scanner
