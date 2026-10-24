@@ -8,6 +8,7 @@ import uuid
 
 from .config import ROOT
 from .model import PipelineError
+from .runtime import PODMAN, user_arguments
 from .util import run
 
 
@@ -27,8 +28,9 @@ class Container:
 
     def __enter__(self):
         run([
-            "docker", "run", "--detach", "--platform=linux/amd64",
+            *PODMAN, "run", "--detach", "--platform=linux/amd64",
             "--name", self.name,
+            "--user", "0:0",
             "--security-opt=no-new-privileges",
             *[
                 item
@@ -43,18 +45,18 @@ class Container:
         return self
 
     def exec(self, arguments, **options):
-        return run(["docker", "exec", self.name, *arguments], **options)
+        return run([*PODMAN, "exec", self.name, *arguments], **options)
 
     def __exit__(self, *exception):
-        run(["docker", "rm", "--force", self.name])
+        run([*PODMAN, "rm", "--force", self.name])
 
     @contextmanager
     def offline_image(self):
-        image = run(["docker", "commit", self.name])
+        image = run([*PODMAN, "commit", "--quiet", self.name])
         try:
             yield image
         finally:
-            run(["docker", "image", "rm", image])
+            run([*PODMAN, "image", "rm", image])
 
 
 class FedoraProviders:
@@ -82,15 +84,15 @@ class FedoraProviders:
 
 
 def build_image(config, log):
-    # Cached exports must not get fresh attestation-index IDs on every build.
-    # Retagging and temporary-image cleanup could otherwise remove a live run's ID.
+    # Native Podman layer caching reuses unchanged preparation images. Docker's
+    # BuildKit provenance flag is not supported or needed by this builder.
     run([
-        "docker", "build", "--platform=linux/amd64", "--provenance=false",
+        *PODMAN, "build", "--platform=linux/amd64", "--layers",
         "--file", ROOT / "container/Containerfile",
         "--tag", config["pipeline"]["build_image"], ROOT,
     ], log=log, timeout=1800)
     return run([
-        "docker", "image", "inspect", "--format={{.Id}}",
+        *PODMAN, "image", "inspect", "--format={{.Id}}",
         config["pipeline"]["build_image"],
     ])
 
@@ -101,10 +103,10 @@ def offline_run(
     if user and os.getuid() == 0:
         raise PipelineError("Run builds from a non-root account; upstream compilation must be unprivileged")
     return run([
-        "docker", "run", "--rm", "--network=none", "--platform=linux/amd64",
+        *PODMAN, "run", "--rm", "--pull=never", "--network=none", "--platform=linux/amd64",
         "--cap-drop=ALL", "--security-opt=no-new-privileges",
         "--pids-limit=1024",
-        *(["--user", f"{os.getuid()}:{os.getgid()}"] if user else []),
+        *(user_arguments() if user else ["--user", "0:0"]),
         "--env", "HOME=/tmp",
         "--volume", f"{Path(work).resolve()}:/work:{'ro,z' if readonly_work else 'z'}",
         "--volume", f"{ROOT / 'container'}:/pipeline:ro,z",
@@ -118,4 +120,4 @@ def offline_run(
 
 
 def image_identity(image):
-    return json.loads(run(["docker", "image", "inspect", image]))[0]["Id"]
+    return json.loads(run([*PODMAN, "image", "inspect", image]))[0]["Id"]

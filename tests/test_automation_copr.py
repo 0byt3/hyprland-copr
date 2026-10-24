@@ -82,16 +82,17 @@ class PublicationAutomationTests(unittest.TestCase):
         self.assertEqual(read_json(self.publication.state_path)["status"], "promoted")
         self.assertFalse(self.publication.pointer.exists())
 
-    def test_authenticated_workers_are_restricted_and_have_no_docker_socket(self):
+    def test_authenticated_workers_are_restricted_and_have_no_engine_socket(self):
         self.publication.run(self.bundle, self.manifest)
         for command, options in (self.commands[1], self.commands[3]):
-            self.assertEqual(command[:3], ["docker", "run", "--rm"])
+            self.assertEqual(command[:4], ["podman", "--remote=false", "run", "--rm"])
+            self.assertIn("--userns=keep-id", command)
             self.assertIn("--read-only", command)
             self.assertIn("--cap-drop=ALL", command)
             self.assertIn(f"{self.credentials}:/run/copr-config:ro,z", command)
             self.assertIn(f"{self.bundle}:{self.bundle}:ro,z", command)
             self.assertIn(f"{self.state}:{self.state}:z", command)
-            self.assertFalse(any("docker.sock" in str(value) for value in command))
+            self.assertFalse(any(".sock" in str(value) for value in command))
             self.assertNotIn(f"{self.checkout}:/workspace:ro,z", command)
             self.assertNotIn("GITHUB_TOKEN", " ".join(str(value) for value in command))
         self.assertEqual(self.commands[3][0][-1], "--yes")
@@ -99,7 +100,7 @@ class PublicationAutomationTests(unittest.TestCase):
     def test_candidate_validation_has_no_inherited_tokens_or_credential_home(self):
         self.publication.run(self.bundle, self.manifest)
         command, options = self.commands[2]
-        self.assertNotEqual(command[0], "docker")
+        self.assertNotEqual(command[0], "podman")
         environment = options["env"]
         self.assertNotIn("COPR_CONFIG_FILE", environment)
         self.assertNotIn("GITHUB_TOKEN", environment)

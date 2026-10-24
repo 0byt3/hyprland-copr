@@ -3,8 +3,8 @@
 # gcc, binutils, pkgconf-pkg-config, lua, lua-libs, lua-devel, and Lua55 RPMs.
 set -euo pipefail
 
-if [[ ! -e /.dockerenv ]]; then
-    printf '%s\n' "Refusing to run installed module probes outside a Docker container." >&2
+if [[ ! -e /run/.containerenv && ! -e /.dockerenv ]]; then
+    printf '%s\n' "Refusing to run installed module probes outside a disposable container." >&2
     exit 1
 fi
 

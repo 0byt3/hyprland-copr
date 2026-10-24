@@ -11,6 +11,7 @@ import tempfile
 from hyprland_copr.build import verify_bundle
 from hyprland_copr.config import ROOT
 from hyprland_copr.model import COMPANIONS, PipelineError, SOURCE_POLICY
+from hyprland_copr.runtime import PODMAN, user_arguments, validation_environment
 from hyprland_copr.util import digest_json, read_json, save_json
 
 
@@ -132,12 +133,12 @@ class Publication:
 
     def authenticated(self, command, bundle, config_path, credentials):
         # Mount only trusted Python code, public configuration, the immutable
-        # bundle and persistent state. Never mount the checkout or Docker socket.
+        # bundle and persistent state. Never mount the checkout or an engine socket.
         return [
-            "docker", "run", "--rm", "--platform=linux/amd64",
+            *PODMAN, "run", "--rm", "--pull=never", "--platform=linux/amd64",
             "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev",
             "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=128",
-            "--user", f"{os.getuid()}:{os.getgid()}",
+            *user_arguments(),
             "--env", "HOME=/tmp", "--env", "PYTHONDONTWRITEBYTECODE=1",
             "--env", "COPR_CONFIG_FILE=/run/copr-config",
             "--volume", f"{ROOT / 'hyprland_copr'}:/workspace/hyprland_copr:ro,z",
@@ -169,7 +170,7 @@ class Publication:
         })
         self.progress("publisher-image")
         self.run_logged([
-            "docker", "build", "--platform=linux/amd64",
+            *PODMAN, "build", "--layers", "--platform=linux/amd64",
             "--file", ROOT / "container/Publisherfile", "--tag", IMAGE, ROOT,
         ], self.logs / "publisher-image.log")
         with tempfile.TemporaryDirectory(prefix="hyprland-copr-publication-") as temporary:
@@ -188,16 +189,7 @@ class Publication:
                 self.progress("copr-validate")
                 # Do not inherit tokens, credential paths, PYTHONPATH, or a
                 # credential-bearing HOME into the candidate validation process.
-                environment = {
-                    key: os.environ[key]
-                    for key in (
-                        "PATH", "LANG", "LC_ALL", "XDG_RUNTIME_DIR",
-                        "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG",
-                        "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
-                    )
-                    if key in os.environ
-                }
-                environment["HOME"] = temporary
+                environment = validation_environment(temporary)
                 self.run_logged([
                     sys.executable, "-u", "-m", "hyprland_copr",
                     "--config", config_path, "copr-validate", bundle,

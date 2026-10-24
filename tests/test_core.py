@@ -289,11 +289,14 @@ class PolicyTests(TemporaryTest):
         self.assertIn("--repo=fedora", REPO_OPTIONS)
         self.assertIn("--repo=updates", REPO_OPTIONS)
 
-    def test_builder_image_avoids_per_export_attestation_identities(self):
+    def test_builder_image_uses_native_podman_layer_caching(self):
         with patch("hyprland_copr.fedora.run", side_effect=["", "sha256:fixed-image"]) as run:
             image = build_image(load_config(), self.root / "image.log")
         self.assertEqual(image, "sha256:fixed-image")
-        self.assertIn("--provenance=false", run.call_args_list[0].args[0])
+        command = run.call_args_list[0].args[0]
+        self.assertEqual(command[:3], ["podman", "--remote=false", "build"])
+        self.assertIn("--layers", command)
+        self.assertNotIn("--provenance=false", command)
 
     def test_state_lock_excludes_concurrent_runs(self):
         with lock(self.root):

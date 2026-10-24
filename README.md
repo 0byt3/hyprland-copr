@@ -11,7 +11,9 @@ The default coordinated stack selects each application's own stable release and 
 The complete 16-component coordinated stack, including Hyprland 0.56.2 and all four companion applications, has passed a real Fedora 44 build and headless install/upgrade validation. A separate Fedora 44 VM session has also passed the graphical checks described below. Hyprland 0.56.2's `>=7,<8` Glaze requirement selects compatible Glaze 7.x, not the newer incompatible 8.x/9.x majors.
 
 ## Local use
-Requirements: Python 3.11 or newer, Git, Docker with a working daemon, and network access for source acquisition and Fedora repository transactions. Install these through your distribution's repositories. Compilation tooling is installed from Fedora repositories inside containers, not on the host.
+Requirements: Python 3.11 or newer, Git, native rootless Podman, and network access for source acquisition and Fedora repository transactions. Install these through your distribution's repositories. No Docker engine, Docker compatibility package, container-engine socket, or privileged automation account is needed. Compilation tooling is installed from Fedora repositories inside containers, not on the host.
+
+The automation uses `podman --remote=false` so remote-engine environment defaults cannot move execution off the automation server. Non-root compilation, QA, and trusted publication use `--userns=keep-id` with the invoking UID/GID, preserving ownership of bind-mounted files. Dependency installation runs as root only inside the rootless container namespace, never as host root. The account needs subordinate UID/GID allocations, a working user runtime directory, and enough local container storage.
 
 Run commands from this project directory:
 
@@ -53,7 +55,7 @@ Coordinated RPM releases include the compositor version and a persisted generati
 * Source-build all reachable `hypr*` dependencies and enforce their combined version bounds. Prefer compatible providers from Fedora's `fedora` and `updates` repositories for non-hypr dependencies; build missing managed fallbacks separately. Portal requirements include its actual external protocol XML files as well as a minimum pkg-config version, so an incomplete older provider cannot silently pass resolution.
 * Discover requirements from supported CMake declarations, respecting known Release/Linux options. Retain unknown conditional branches conservatively; reject unsupported dynamic required declarations. Validate active source declarations against expanded configure traces. Protocol definitions support their older Meson and current CMake layouts; missing/ambiguous layouts fail closed. Lua uses a bounded Make adapter.
 * Freeze source commits, recursive submodule revisions, archive checksums, generated BuildRequires, and dependency ordering.
-* Install build dependencies before compilation. Compile with no networking, no Linux capabilities, and the host's non-root UID in a disposable Fedora 44 image. Bind mounts use Docker's shared SELinux label (`z`, or `ro,z` for read-only mounts), so enforcing Fedora hosts do not require disabling SELinux.
+* Install build dependencies before compilation. Compile with no networking, no Linux capabilities, and the host's non-root UID in a disposable Fedora 44 image. Podman's `--userns=keep-id` preserves that identity. Bind mounts use the shared SELinux label (`z`, or `ro,z` for read-only mounts), so enforcing Fedora hosts do not require disabling SELinux. No recursive `:U` ownership changes are used.
 * Run rpmlint on each rendered spec before compilation, then on that spec, its SRPM, and every binary RPM (including debug packages) before accepting the build. Recheck SRPMs and binary RPMs during offline bundle validation, including signed COPR candidates. Errors stop the pipeline; warnings remain visible in the component build and validation logs. No permissive mode or blanket diagnostic filters are used. Generated specs include a deterministic changelog dated from the source timestamp; undated Lua sources use the fixed initial packaging date, 2026-10-24.
 * Validate ordinary Fedora/prior-COPR package upgrades without `--allowerasing`, RPM EVR ordering, dependency closure, ELF library resolution, Lua embedding, bytecode, module loading, and system-Lua coexistence.
 * Runtime validation has read-only artifact mounts and no network or publication credentials. It cannot establish GPU/session correctness or compatibility with arbitrary third-party plugins.
@@ -100,8 +102,11 @@ python3 -m compileall -q hyprland_copr container deploy tests ci
 Run the complete containerized lint/syntax/unit checks:
 
 ```bash
-docker build -f container/Checksfile -t hyprland-copr-checks .
-docker run --rm --network=none -v "$PWD:/workspace:ro,z" hyprland-copr-checks
+podman --remote=false build --layers -f container/Checksfile -t hyprland-copr-checks .
+podman --remote=false run --rm --pull=never --network=none \
+    --userns=keep-id --user "$(id -u):$(id -g)" \
+    --cap-drop=ALL --security-opt=no-new-privileges \
+    -v "$PWD:/workspace:ro,z" hyprland-copr-checks
 ```
 
 The checks image installs Ruff, ShellCheck, rpmlint, and the COPR client from Fedora repositories. No pip, Go installer, third-party tool image, or host software installation is required. Checks run offline with a read-only source mount and temporary container-only caches.
@@ -113,7 +118,9 @@ The local automation runner invokes the same checks before every build. Real `ru
 To audit an existing bundle without rebuilding it:
 
 ```bash
-docker run --rm --network=none -v "$PWD/dist/stack:/bundle:ro,z" \
+podman --remote=false run --rm --pull=never --network=none \
+    --userns=keep-id --user "$(id -u):$(id -g)" \
+    -v "$PWD/dist/stack:/bundle:ro,z" \
     --entrypoint bash hyprland-copr-checks \
     -c 'rpmlint /bundle/srpms/*.rpm /bundle/rpms/*.rpm'
 ```
@@ -123,20 +130,26 @@ Older bundles are not retroactively qualified by the new gate: an audit may repo
 ## COPR setup and publication
 `config/project.toml` targets **`byte0/hyprland`**, with `copr.publish = true` and `copr.exclusive_writer = true`. The latter is an operational commitment: disable all other writers before running publication. The pipeline never creates projects or silently changes live project settings.
 
-An anonymous inspection on 2026-10-24 found this project's `devel_mode = false`, `follow_fedora_branching = true`, and `storage = "pulp"`. **Those settings block the guarded publisher.** Before unattended publication, the operator must arrange the following supported project policy; do not weaken the checks to fit the current settings. Existing Pulp repository migration/storage changes require COPR-supported administration rather than an assumed in-place toggle.
+The publisher supports both COPR backend storage and Fedora COPR's production Pulp storage. An anonymous inspection on 2026-10-24 confirmed `byte0/hyprland` uses Pulp, with manual publication enabled and automatic Fedora branching disabled. The pipeline reads and validates the hosted configuration; local flags never change live project settings.
 
 Configure the dedicated `fedora-44-x86_64` project with:
 * Manual repository publication / development mode, initialized repository metadata, and normal COPR signing.
 * No additional repositories, additional build packages/modules, alternative bootstrap image, automatic Fedora branching, or external submission hooks.
 * Build network access disabled. Only the project's own public/development overlays are permitted in addition to the Fedora chroot's normal official repositories.
-* Backend storage (`storage = "backend"`). Pulp layouts are not currently supported by the publisher's build-specific URL and metadata checks.
+* Supported storage (`storage = "backend"` or `"pulp"`). Backend development metadata uses `<chroot>/devel/`; Pulp uses the sibling `<chroot>-devel/` distribution. Unknown layouts or storage migrations during a release fail closed.
 * This pipeline as the **sole build submitter and publisher**. Do not submit manual builds, run another pipeline, or manually regenerate metadata while candidates are pending.
 
-COPR's asynchronous regeneration API has no atomic candidate-set or compare-and-swap parameter. The pipeline checks project policy, signing key, build inventories, public/development metadata, build-specific URLs, package identities, and checksums before publication. These checks depend on the sole-writer prerequisite; they are not an atomic multi-writer transaction. Unknown API/repository layouts fail closed and require review.
+COPR's asynchronous regeneration API has no atomic candidate-set or compare-and-swap parameter. The pipeline checks project policy, signing key, build inventories, public/development metadata, build-specific provenance, package identities, and checksums before publication. These checks depend on the sole-writer prerequisite; they are not an atomic multi-writer transaction. Unknown API/repository layouts fail closed and require review.
+
+Pulp content is fetched anonymously through only the exact COPR project/distribution URL, its matching `packages.redhat.com` production content path, and the known production COPR S3 content-addressed artifact path. Redirect count, response sizes, SHA256 checksums and decompression are bounded or verified. Signed storage queries are neither logged nor persisted, and credentials/cookies are never forwarded. Candidate RPMs are downloaded from the development distribution, while public/development package records use normalized public paths for exact set comparisons. The official per-build binary NEVRA inventory and recorded main-directory result URL establish build provenance; SRPM records are excluded from binary comparisons. A Pulp candidate NEVRA cannot reuse an identity from any previous recorded build, even if no longer public. All candidate signatures and header identities are still verified with the pinned project key.
+
+A new empty Pulp project may not export `pubkey.gpg` until its first binary build. Only an initialized project with empty public/development repositories and no prior builds can enter a recorded first-key bootstrap. After the first recorded successful candidate build, the publisher pins the exported key before any subsequent build or candidate execution. Unrelated activity, missing metadata, missing keys for existing projects, or later key changes stop publication. No missing repository is treated as an empty one. Pulp's metadata-only development refresh during promotion is allowed only with unchanged candidate bytes, package sets, policy, inventory and key; regeneration is still issued at most once.
 
 Keep credentials in the COPR client config supplied by your secret store, never in this tree. Set `COPR_CONFIG_FILE` to its protected path, or use `~/.config/copr` for the automation account. The local controller checks file metadata, not credential contents: the file must be regular, owned by that account, have no group/other permissions (normally mode `0600`), and be outside the checkout, pipeline state, and artifact directories. Symlinked credential files are rejected. Keep its containing directory protected too. No token is passed on a command line or embedded in generated configuration.
 
-Authenticated submission/promotion use `container/Publisherfile`, which installs Fedora's `python3-copr` and `python3-rpm`. Containers run as the automation UID, with a read-only root filesystem, dropped capabilities, no Docker socket, read-only Python code/bundle/config/credential mounts, and writable recovery state. No source compilation, package installation, or candidate execution occurs in those containers. Candidate validation runs in a separate local process with a temporary credential-free home and an allowlisted environment; its disposable test containers receive no COPR credentials. A custom Docker context may require an explicit `DOCKER_CONFIG` path because validation does not use the account's normal home.
+Authenticated submission/promotion use `container/Publisherfile`, which installs Fedora's `python3-copr` and `python3-rpm`. Containers run as the automation UID with `--userns=keep-id`, a read-only root filesystem, dropped capabilities, no engine socket, read-only Python code/bundle/config/credential mounts, and writable recovery state. No source compilation, package installation, or candidate execution occurs in those containers. Candidate validation runs in a separate local process with a temporary credential-free home and an allowlisted environment; its disposable test containers receive no COPR credentials.
+
+Validation preserves absolute `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_CACHE_HOME` paths and the account's runtime directory, so changing `HOME` does not accidentally select another rootless image store. Default paths point to the automation account's `.config`, `.local/share`, and `.cache`. Keep custom Podman storage paths absolute rather than dependent on a temporary `HOME`. Remote-engine endpoints and registry/COPR authentication variables are not inherited by the validation process. The public Fedora registry does not require a registry login.
 
 The three phases are deliberately separate:
 
@@ -155,7 +168,37 @@ COPR automatic pruning can also change the captured inventory. Such drift requir
 After publication, Fedora clients can enable the configured project using Fedora's repository-installed `dnf copr enable byte0/hyprland`, then upgrade `hyprland`. The pipeline does not change host repositories or install its RPMs on your desktop.
 
 ## On-premises automation
-Deploy the source tree to your server using an ordinary Git clone or other source synchronization. Install Python 3.11+, Git, and Docker from the server distribution's repositories, and use a non-root account with access to the Docker daemon. No GitHub CLI, hosted automation account, or GitHub secrets are required. Stop scheduled/active runs before updating the checkout; the runner does not fetch or update project code automatically.
+Deploy the source tree to your server using an ordinary Git clone or other source synchronization. Install Python 3.11+, Git, and Podman from the server distribution's repositories, and use a dedicated non-root account with its own rootless container storage. No GitHub CLI, hosted automation account, GitHub secrets, Docker daemon, or `podman-docker` shim is required. Stop scheduled/active runs before updating the checkout; the runner does not fetch or update project code automatically.
+
+For a fresh Fedora 44 server, an administrator installs host prerequisites from Fedora repositories:
+
+```bash
+sudo dnf --repo=fedora --repo=updates --setopt=install_weak_deps=False -y install \
+    git \
+    python3 \
+    podman \
+    shadow-utils \
+    shadow-utils-subid \
+    passt \
+    fuse-overlayfs \
+    ca-certificates \
+    systemd \
+    crun
+```
+
+Create a normal `copr` account with a locked password, its own home and no sudo/wheel membership. A regular account is used rather than a system UID so Fedora's `useradd` allocates subordinate IDs for rootless containers:
+
+```bash
+sudo useradd --create-home --user-group --shell /bin/bash \
+    --comment "Hyprland COPR automation" copr
+sudo loginctl enable-linger copr
+sudo systemctl start "user@$(id -u copr).service"
+sudo -iu copr git clone https://github.com/0byt3/hyprland-copr.git /home/copr/hyprland-copr
+```
+
+Do not recreate an existing account or overwrite an existing checkout. Verify at least 65,536 non-overlapping subordinate UIDs and GIDs for `copr` in `/etc/subuid` and `/etc/subgid`; do not guess ranges or reuse another account's allocation. For administrative commands run as `copr`, start in `/home/copr/hyprland-copr` and provide `HOME=/home/copr`, `XDG_RUNTIME_DIR=/run/user/UID`, and `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/UID/bus`, substituting its numeric UID. Set account-specific XDG configuration/data/cache paths if the administrator's environment overrides them. Normal logins and user services receive these through their own session.
+
+Enabling lingering starts the user manager and keeps its runtime available while logged out; it does not enable the project's timer. Verify `podman --remote=false info` as `copr`, not as root. Images and preparation snapshots belong to this account's store and are not shared with rootful Podman or another account.
 
 Run these commands from the deployed project directory:
 
@@ -194,7 +237,9 @@ python3 deploy/install.py
 
 It uses the templates in `deploy/systemd/` to create `hyprland-copr.service` and `hyprland-copr.timer` under `$XDG_CONFIG_HOME/systemd/user` (or `~/.config/systemd/user`). The service points at this checkout's actual absolute path and the Python interpreter running the installer, so no hard-coded clone location or manual path editing is required. Rerun the installer after moving the checkout or changing interpreters.
 
-Before writing files, the installer checks Python 3.11+, Git, Docker, and systemd tooling, validates the generated units with `systemd-analyze --user verify`, checks the user manager and Docker daemon, and refuses to update an active automation service. It does not install software or change Docker permissions, host repositories, publication settings, or user lingering.
+Before writing files, the installer checks Python 3.11+, Git, Podman, and systemd tooling, validates the generated units with `systemd-analyze --user verify`, checks the user manager and native Podman runtime, and refuses to update an active automation service. It does not install software or change subordinate-ID mappings, host repositories, publication settings, or user lingering.
+
+The host user service intentionally does not set `NoNewPrivileges=yes`: that would prevent rootless Podman's `newuidmap`/`newgidmap` helpers from establishing subordinate-ID mappings. All container invocations retain their own `--security-opt=no-new-privileges`; compilation, QA, and publishing workers also retain dropped capabilities and non-root container UIDs.
 
 Installation then reloads the user manager, enables the timer, and starts/restarts **the timer only** so schedule updates take effect. The default is every six hours in the server's local timezone, with up to five minutes of jitter and persistent catch-up after a missed start. **Enabling it can start a build and guarded publication immediately if a scheduled run was missed.** Prepare credentials and the supported live-project policy first, or stage with `--no-enable`. An already installed timer uses the updated runner automatically.
 
@@ -218,7 +263,7 @@ Rerunning safely updates installer-managed files; unrelated units and symlinks a
 
 Use `systemctl --user list-timers hyprland-copr.timer --no-pager` to inspect the schedule, `systemctl --user start hyprland-copr.service` for an immediate run, and `journalctl --user -u hyprland-copr.service --no-pager` to find its run directory. `systemctl --user disable --now hyprland-copr.timer` stops future scheduled triggers without interrupting an already running build.
 
-Enable user lingering through the server's normal administration process if the timer must run while the account is logged out. Rootless/custom Docker deployments may also need their Docker socket/context environment configured in a user-service drop-in; the installer checks the invoking account's Docker access, not a different manager environment. The timer does not require a GitHub runner.
+Enable user lingering through the server's normal administration process if the timer must run while the account is logged out. Rootless Podman uses the service account's local runtime and storage directly; do not configure or expose a container-engine socket. Custom storage paths may need public XDG/container configuration paths in a user-service drop-in; the installer checks the invoking account's Podman runtime, not a different manager environment. The timer does not require a GitHub runner.
 
 ### Local recovery and retention
 Back up `.state/` and `dist/runs/` independently of the source repository. Retain failed runs for diagnosis; there is no remote artifact store or automatic pruning. Per-run resolutions contain absolute source/cache paths, so keep their referenced source archives/checkouts and account for those paths when moving between hosts.

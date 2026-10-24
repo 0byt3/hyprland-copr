@@ -1,4 +1,4 @@
-"""Offline publisher tests: no COPR requests, credentials, or Docker required."""
+"""Offline publisher tests: no COPR requests, credentials, or container engine required."""
 
 import copy
 import gzip
@@ -9,6 +9,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+import urllib.error
 from unittest.mock import Mock, patch
 
 from hyprland_copr import publish
@@ -202,7 +203,7 @@ class PublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(PipelineError, "Symlinks"):
             self.publisher._output(self.publisher.candidate_root / self.package["file"])
 
-    def test_actual_copr_manual_mode_repository_projection(self):
+    def policy_projection(self, storage="backend"):
         # Shapes from official apiv3_project_chroots.to_build_config_dict and
         # BuildConfigLogic.generate_{build_config,additional_repos}.
         project = {
@@ -214,7 +215,7 @@ class PublisherTests(unittest.TestCase):
             "chroot_repos": {"fedora-44-x86_64": self.publisher.repo},
             "follow_fedora_branching": False,
             "packit_forge_projects_allowed": [],
-            "storage": "backend",
+            "storage": storage,
             "bootstrap": None,
         }
         chroot = {
@@ -246,10 +247,17 @@ class PublisherTests(unittest.TestCase):
                 },
                 {
                     "id": "copr_base_devel",
-                    "baseurl": self.publisher.repo + "devel/",
+                    "baseurl": (
+                        self.publisher.base + self.publisher.chroot + "-devel/"
+                        if storage == "pulp" else self.publisher.repo + "devel/"
+                    ),
                 },
             ],
         }
+        return project, chroot, effective
+
+    def test_actual_copr_manual_mode_repository_projection(self):
+        project, chroot, effective = self.policy_projection()
         with patch.object(self.publisher, "_api", side_effect=[project, chroot, effective]):
             self.publisher._project_policy()
         effective["repos"].append({
@@ -542,6 +550,269 @@ class PublisherTests(unittest.TestCase):
                     else:
                         with self.assertRaisesRegex(PipelineError, "base URL"):
                             self.publisher._repository(base)
+
+    def test_pulp_policy_selects_only_the_exact_sibling_devel_overlay(self):
+        project, chroot, effective = self.policy_projection("pulp")
+        with patch.object(self.publisher, "_api", side_effect=[project, chroot, effective]):
+            self.publisher._project_policy()
+        self.assertEqual(self.publisher.storage, "pulp")
+        self.assertEqual(self.publisher.devel, self.publisher.base + self.publisher.chroot + "-devel/")
+        for field, value in (
+            ("storage", "unknown"),
+            ("enable_net", True),
+            ("devel_mode", False),
+            ("follow_fedora_branching", True),
+            ("additional_repos", ["https://example.com/repo/"]),
+        ):
+            changed = {**project, field: value}
+            with (
+                self.subTest(field=field),
+                patch.object(self.publisher, "_api", side_effect=[changed, chroot, effective]),
+                self.assertRaises(PipelineError),
+            ):
+                self.publisher._project_policy()
+        effective["repos"][1]["baseurl"] = self.publisher.repo + "devel/"
+        with (
+            patch.object(self.publisher, "_api", side_effect=[project, chroot, effective]),
+            self.assertRaises(PipelineError),
+        ):
+            self.publisher._project_policy()
+
+    def test_binary_inventory_handles_real_copr_srpm_records_and_rejects_duplicates(self):
+        package = {**self.package, "epoch": None}
+        source = {**package, "arch": "src"}
+        self.assertEqual(
+            self.publisher._binary_identities({"packages": [source, package]}),
+            [publish.identity(self.package)],
+        )
+        for result in (
+            {"packages": [package, package]},
+            {"packages": ["invalid"]},
+            {"packages": [{**package, "arch": "aarch64"}]},
+            {},
+        ):
+            with self.subTest(result=result), self.assertRaises(PipelineError):
+                self.publisher._binary_identities(result)
+
+    def pulp_snapshot(self):
+        self.publisher.storage = "pulp"
+        artifact = {**self.artifact, "url": self.publisher._pulp_package_url(self.package)}
+        snapshot = copy.deepcopy(self.snapshot)
+        snapshot["inventory"]["7"]["packages"] = [publish.identity(self.package)]
+        snapshot["devel"]["packages"] = {publish.identity(artifact): artifact}
+        return snapshot, artifact
+
+    def test_pulp_primary_paths_are_normalized_but_cross_distribution_paths_fail(self):
+        self.publisher.storage = "pulp"
+        name = publish.filename(self.package)
+        for base in (self.publisher.repo, self.publisher.devel):
+            for href in (
+                f"Packages/l/{name}",
+                self.publisher._pulp_package_url(self.package),
+                "https://evil.example/Packages/l/" + name,
+                f"Packages/wrong/{name}",
+            ):
+                primary = (
+                    '<metadata xmlns="http://linux.duke.edu/metadata/common" packages="1">'
+                    '<package><name>lua55</name><arch>x86_64</arch>'
+                    '<version epoch="0" ver="5.5.1" rel="1.fc44"/>'
+                    f'<checksum type="sha256">{self.artifact["sha256"]}</checksum>'
+                    f'<location href="{href}"/></package></metadata>'
+                ).encode()
+                repomd = (
+                    '<repomd xmlns="http://linux.duke.edu/metadata/repo">'
+                    '<data type="primary"><location href="repodata/primary.xml"/>'
+                    f'<checksum type="sha256">{checksum(primary)}</checksum>'
+                    '</data></repomd>'
+                ).encode()
+                responses = {
+                    base + "repodata/repomd.xml": repomd,
+                    base + "repodata/primary.xml": primary,
+                }
+                allowed = href == f"Packages/l/{name}" or (
+                    base == self.publisher.repo and href == self.publisher._pulp_package_url(self.package)
+                )
+                with (
+                    self.subTest(base=base, href=href),
+                    patch.object(self.publisher, "_get", side_effect=lambda url, **kwargs: responses[url]),
+                ):
+                    if allowed:
+                        result = self.publisher._repository(base)
+                        self.assertEqual(
+                            result["packages"][publish.identity(self.package)]["url"],
+                            self.publisher._pulp_package_url(self.package),
+                        )
+                    else:
+                        with self.assertRaises(PipelineError):
+                            self.publisher._repository(base)
+
+    def test_pulp_history_records_binary_identities_and_rejects_nevra_reuse(self):
+        self.publisher.storage = "pulp"
+        result = {"packages": [{**self.package, "arch": "src"}, self.package]}
+        with patch.object(
+            self.publisher, "_api", side_effect=[{"items": [self.inventory]}, result]
+        ):
+            inventory = self.publisher._inventory()
+        self.assertEqual(inventory["7"]["packages"], [publish.identity(self.package)])
+        initial = {**self.initial, "inventory": inventory}
+        with self.assertRaisesRegex(PipelineError, "already used"):
+            self.publisher._upgrade_gate(initial)
+
+    def test_pulp_completed_artifacts_require_recorded_build_provenance(self):
+        snapshot, artifact = self.pulp_snapshot()
+        state = self.state("building")
+        state["builds"][0]["status"] = "waiting"
+        state["builds"][0].pop("artifacts")
+        save_json(self.publisher.state_path, state)
+        client = Mock()
+        client.build_chroot_proxy.get.return_value = {
+            "state": "succeeded",
+            "result_url": self.publisher.repo + "00000007-lua55/",
+        }
+        client.build_chroot_proxy.get_built_packages.return_value = {
+            "packages": [{**self.package, "arch": "src"}, self.package],
+        }
+        with patch.object(self.publisher, "_snapshot", return_value=snapshot):
+            artifacts, _ = self.publisher._completed_artifacts(
+                client, state["builds"][0], self.publisher.records[0]
+            )
+        self.assertEqual(artifacts, [artifact])
+        snapshot["inventory"]["8"] = {**snapshot["inventory"]["7"], "id": 8}
+        with (
+            patch.object(self.publisher, "_snapshot", return_value=snapshot),
+            self.assertRaisesRegex(PipelineError, "ambiguous"),
+        ):
+            self.publisher._completed_artifacts(client, state["builds"][0], self.publisher.records[0])
+
+    def test_empty_pulp_project_can_snapshot_an_unexported_key_but_not_missing_metadata(self):
+        self.publisher.storage = "pulp"
+        missing = urllib.error.HTTPError(self.publisher.key_url, 404, "missing", {}, None)
+        with (
+            patch.object(self.publisher, "_project_policy", return_value={"manual": True}),
+            patch.object(self.publisher, "_inventory", return_value={}),
+            patch.object(self.publisher, "_repository", return_value=self.initial["public"]),
+            patch.object(self.publisher, "_get", side_effect=missing),
+        ):
+            self.assertIsNone(self.publisher._snapshot()["key_sha256"])
+        with (
+            patch.object(self.publisher, "_project_policy", return_value={"manual": True}),
+            patch.object(self.publisher, "_inventory", return_value={}),
+            patch.object(self.publisher, "_repository", return_value=self.snapshot["devel"]),
+            patch.object(self.publisher, "_get", side_effect=missing),
+            self.assertRaisesRegex(PipelineError, "signing key"),
+        ):
+            self.publisher._snapshot()
+        with (
+            patch.object(self.publisher, "_get", side_effect=missing),
+            self.assertRaisesRegex(PipelineError, "404 repository"),
+        ):
+            self.publisher._repository(self.publisher.devel)
+
+    def test_first_key_pin_requires_exactly_the_first_own_build_and_is_durable(self):
+        snapshot, artifact = self.pulp_snapshot()
+        state = self.state("building")
+        state["initial"] = copy.deepcopy(self.initial)
+        state["initial"]["key_sha256"] = None
+        state["key_bootstrap"] = True
+        entry = state["builds"][0]
+        for change in ("unrecorded", "unrelated", "nonempty", "changed-policy", "missing-key"):
+            broken_state = copy.deepcopy(state)
+            broken_snapshot = copy.deepcopy(snapshot)
+            if change == "unrecorded":
+                broken_state["key_bootstrap"] = False
+            elif change == "unrelated":
+                broken_snapshot["inventory"]["8"] = self.inventory
+            elif change == "nonempty":
+                broken_state["initial"]["inventory"]["6"] = self.inventory
+            elif change == "changed-policy":
+                broken_snapshot["policy"] = {"manual": False}
+            else:
+                broken_snapshot["key_sha256"] = None
+            with self.subTest(change=change), self.assertRaises(PipelineError):
+                self.publisher._pin_bootstrap_key(broken_state, broken_snapshot, entry, [artifact])
+        self.publisher._pin_bootstrap_key(state, snapshot, entry, [artifact])
+        saved = self.publisher._read_state()
+        self.assertFalse(saved["key_bootstrap"])
+        self.assertEqual(saved["initial"]["key_sha256"], snapshot["key_sha256"])
+        snapshot["key_sha256"] = "f" * 64
+        with self.assertRaisesRegex(PipelineError, "signing key changed"):
+            self.publisher._assert_progress(saved, snapshot, [artifact])
+
+    def test_nonempty_project_cannot_use_key_bootstrap_before_upload(self):
+        self.publisher.storage = "pulp"
+        initial = copy.deepcopy(self.initial)
+        initial["key_sha256"] = None
+        initial["inventory"]["6"] = self.inventory
+        with (
+            patch.object(self.publisher, "_snapshot", return_value=initial),
+            patch.object(self.publisher, "_client") as client,
+            self.assertRaisesRegex(PipelineError, "completely empty"),
+        ):
+            self.publisher.submit()
+        client.assert_not_called()
+        self.assertFalse(self.publisher.state_path.exists())
+
+    def test_pulp_promotion_allows_only_metadata_refresh_with_identical_candidates(self):
+        snapshot, _ = self.pulp_snapshot()
+        state = {"submitted": snapshot}
+        promoted = copy.deepcopy(snapshot)
+        promoted["public"] = copy.deepcopy(snapshot["devel"])
+        promoted["devel"]["repomd_sha256"] = "a" * 64
+        self.assertTrue(self.publisher._promotion_observation(state, promoted))
+        promoted["devel"]["packages"][publish.identity(self.package)]["sha256"] = "b" * 64
+        with self.assertRaisesRegex(PipelineError, "development candidates"):
+            self.publisher._promotion_observation(state, promoted)
+
+    def test_pulp_submission_bootstraps_once_and_resumes_the_same_build(self):
+        snapshot, artifact = self.pulp_snapshot()
+        initial = copy.deepcopy(self.initial)
+        initial["key_sha256"] = None
+        client = Mock()
+        client.build_proxy.create_from_file.return_value = {"id": 7}
+        client.build_chroot_proxy.get.return_value = {
+            "state": "succeeded",
+            "result_url": self.publisher.repo + "00000007-lua55/",
+        }
+        client.build_chroot_proxy.get_built_packages.return_value = {
+            "packages": [{**self.package, "arch": "src"}, self.package],
+        }
+        with (
+            patch.object(self.publisher, "_client", return_value=client),
+            patch.object(
+                self.publisher, "_snapshot",
+                side_effect=[initial, initial, snapshot, snapshot, snapshot],
+            ),
+            patch.object(self.publisher, "_wait"),
+        ):
+            result = self.publisher.submit()
+            self.assertEqual(result["status"], "submitted")
+            self.assertFalse(result["key_bootstrap"])
+            self.assertEqual(result["initial"]["key_sha256"], snapshot["key_sha256"])
+            self.assertEqual(result["builds"][0]["artifacts"], [artifact])
+            self.assertEqual(self.publisher.submit()["status"], "submitted")
+        client.build_proxy.create_from_file.assert_called_once()
+
+    def test_pulp_validation_downloads_development_not_unpublished_public_paths(self):
+        snapshot, artifact = self.pulp_snapshot()
+        state = self.state()
+        state["builds"][0]["artifacts"] = [artifact]
+        state["builds"][0]["inventory"] = snapshot["inventory"]["7"]
+        state["submitted"] = snapshot
+        state["checkpoint"] = snapshot
+        save_json(self.publisher.state_path, state)
+        with (
+            patch.dict(sys.modules, {"copr": None, "copr.v3": None}),
+            patch.object(self.publisher, "_snapshot", return_value=snapshot),
+            patch.object(self.publisher, "_download", side_effect=self.fake_download) as download,
+            patch.object(self.publisher, "_check_signatures"),
+            patch.object(publish, "build_image", return_value="sha256:test"),
+            patch.object(publish, "Builder"),
+        ):
+            self.assertEqual(self.publisher.validate()["status"], "validated")
+        self.assertEqual(
+            download.call_args_list[1].args[0],
+            self.publisher._pulp_package_url(self.package, devel=True),
+        )
 
     def test_xml_entities_are_rejected(self):
         with self.assertRaises(PipelineError):

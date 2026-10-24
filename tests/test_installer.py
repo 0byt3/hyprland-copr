@@ -71,12 +71,12 @@ class TimerInstallerTests(unittest.TestCase):
             ["systemctl", "--user", "enable", installer.TIMER],
             ["systemctl", "--user", "restart", installer.TIMER],
         ])
-        self.assertIn(["docker", "info"], self.commands)
+        self.assertIn(["podman", "--remote=false", "info"], self.commands)
         self.assertFalse(any(
             "start" in command or "show-environment" in command for command in self.commands
         ))
 
-    def test_no_enable_installs_without_manager_or_docker_daemon_calls(self):
+    def test_no_enable_installs_without_manager_or_podman_runtime_calls(self):
         installer.install(self.arguments("--no-enable"), self.project)
         self.assertTrue((self.directory / installer.TIMER).is_file())
         self.assertEqual(len(self.commands), 1)
@@ -116,9 +116,9 @@ class TimerInstallerTests(unittest.TestCase):
 
     def test_missing_prerequisites_are_not_installed_automatically(self):
         with patch.object(
-            installer.shutil, "which", side_effect=lambda tool: None if tool == "docker" else tool,
+            installer.shutil, "which", side_effect=lambda tool: None if tool == "podman" else tool,
         ):
-            with self.assertRaisesRegex(RuntimeError, "Missing docker"):
+            with self.assertRaisesRegex(RuntimeError, "Missing podman"):
                 installer.install(self.arguments(), self.project)
         self.assertFalse(self.directory.exists())
         self.assertEqual(self.commands, [])
@@ -204,9 +204,9 @@ class TimerInstallerTests(unittest.TestCase):
                 installer.install(self.arguments("--no-enable"), self.project)
         self.assertFalse(self.directory.exists())
 
-    def test_unavailable_manager_or_docker_prevents_activation_and_writes(self):
+    def test_unavailable_manager_or_podman_prevents_activation_and_writes(self):
         original = installer.run
-        for tool in ("systemctl", "docker"):
+        for tool in ("systemctl", "podman"):
             def failing(arguments, **options):
                 if arguments[0] == tool:
                     raise subprocess.CalledProcessError(1, arguments)

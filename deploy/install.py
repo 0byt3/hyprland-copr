@@ -113,7 +113,7 @@ def install(arguments, project=None):
     ):
         if not (project / relative).is_file():
             raise RuntimeError(f"Missing project file: {relative}")
-    for tool in ("git", "docker", "systemd-analyze", "systemctl"):
+    for tool in ("git", "podman", "systemd-analyze", "systemctl"):
         if shutil.which(tool) is None:
             raise RuntimeError(f"Missing {tool}; install prerequisites from distribution repositories")
     config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
@@ -156,7 +156,7 @@ def install(arguments, project=None):
                 "The automation service is active or its state is unknown; "
                 "wait for it to finish before installing"
             )
-        run(["docker", "info"])
+        run(["podman", "--remote=false", "info"])
     directory.mkdir(parents=True, exist_ok=True)
     previous = {
         name: (directory / name).read_text() if (directory / name).exists() else None

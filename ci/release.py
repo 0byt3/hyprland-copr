@@ -12,6 +12,7 @@ from hyprland_copr.build import verify_bundle
 from hyprland_copr.cli import already_published
 from hyprland_copr.config import ROOT, load_config
 from hyprland_copr.model import PipelineError, ROOT_COMPONENTS
+from hyprland_copr.runtime import PODMAN, user_arguments
 from hyprland_copr.util import lock, read_json, save_json
 
 from .copr import Publication, check_credentials, destination
@@ -63,7 +64,7 @@ def run_logged(arguments, path, *, env=None):
 
 def execute(arguments):
     if os.getuid() == 0:
-        raise PipelineError("Run local automation as a non-root account with Docker access")
+        raise PipelineError("Run local automation as a non-root account with rootless Podman")
     config_path = project_path(arguments.config) if arguments.config else None
     config = load_config(config_path)
     state = project_path(config["pipeline"]["state_directory"])
@@ -117,14 +118,14 @@ def execute(arguments):
             save_json(output / "result.json", result)
         try:
             run_logged([
-                "docker", "build", "--file", ROOT / "container/Checksfile",
+                *PODMAN, "build", "--layers", "--file", ROOT / "container/Checksfile",
                 "--tag", "hyprland-copr-checks", ROOT,
             ], logs / "checks-image.log")
             phase = "checks"
             run_logged([
-                "docker", "run", "--rm", "--network=none", "--cap-drop=ALL",
+                *PODMAN, "run", "--rm", "--pull=never", "--network=none", "--cap-drop=ALL",
                 "--security-opt=no-new-privileges",
-                "--user", f"{os.getuid()}:{os.getgid()}",
+                *user_arguments(),
                 "--env", "HOME=/tmp", "--volume", f"{ROOT}:/workspace:ro,z",
                 "hyprland-copr-checks",
             ], logs / "checks.log")

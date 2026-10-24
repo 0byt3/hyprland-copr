@@ -1,0 +1,5 @@
+**
+!container/
+!container/Containerfile
+!container/Checksfile
+!container/Publisherfile

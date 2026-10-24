@@ -42,8 +42,9 @@ class LocalAutomationTests(unittest.TestCase):
         ):
             self.assertEqual(release.execute(self.arguments()), 0)
         commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(commands[0][:2], ["docker", "build"])
-        self.assertEqual(commands[1][:3], ["docker", "run", "--rm"])
+        self.assertEqual(commands[0][:3], ["podman", "--remote=false", "build"])
+        self.assertEqual(commands[1][:4], ["podman", "--remote=false", "run", "--rm"])
+        self.assertIn("--userns=keep-id", commands[1])
         self.assertIn("--network=none", commands[1])
         self.assertIn("--cap-drop=ALL", commands[1])
         self.assertIn(f"{self.root}:/workspace:ro,z", commands[1])
@@ -328,9 +329,9 @@ class LocalAutomationTests(unittest.TestCase):
     def test_logged_commands_run_locally_without_a_shell(self):
         path = self.root / "command.log"
         with patch.object(release.subprocess, "run") as run:
-            release.run_logged(["docker", "probe"], path)
+            release.run_logged(["podman", "probe"], path)
         run.assert_called_once()
-        self.assertEqual(run.call_args.args[0], ["docker", "probe"])
+        self.assertEqual(run.call_args.args[0], ["podman", "probe"])
         self.assertEqual(run.call_args.kwargs["cwd"], self.root)
         self.assertTrue(run.call_args.kwargs["check"])
         self.assertNotIn("shell", run.call_args.kwargs)

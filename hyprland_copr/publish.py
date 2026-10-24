@@ -31,6 +31,7 @@ import xml.etree.ElementTree as ET
 from .build import Builder, verify_bundle
 from .fedora import Container, build_image
 from .model import PipelineError, SOURCE_POLICY, root_package
+from .transport import PulpRedirect, read_content
 from .util import digest_json, read_json, save_json, sha256
 
 
@@ -113,6 +114,7 @@ class Publisher:
             raise PipelineError("Configure a dedicated Fedora 44 COPR project first")
         self.base = f"{DOWNLOAD}/results/{self.owner}/{self.project}/"
         self.repo = self.base + self.chroot + "/"
+        self.storage = "backend"
         self.key_url = self.base + "pubkey.gpg"
         self.records = self.manifest["builds"]
         self.packages = {value["file"]: value for value in self.manifest["packages"]}
@@ -164,6 +166,26 @@ class Publisher:
             raise PipelineError("Publication root must have exactly one main runtime RPM")
         self.root_release = root_packages[0]["release"]
         self.candidate_root = self.state_path.parent / "copr-candidates" / self.digest
+
+    @property
+    def devel(self):
+        return self.base + self.chroot + "-devel/" if self.storage == "pulp" else self.repo + "devel/"
+
+    def _pulp_package_url(self, value, *, devel=False):
+        name = filename(value)
+        return (self.devel if devel else self.repo) + f"Packages/{name[0]}/{name}"
+
+    @staticmethod
+    def _binary_identities(result):
+        if not isinstance(result, dict) or not isinstance(result.get("packages"), list):
+            raise PipelineError("Unsupported COPR built-packages response")
+        packages = result["packages"]
+        if any(not isinstance(value, dict) for value in packages):
+            raise PipelineError("Malformed COPR built-package record")
+        binaries = [identity(value) for value in packages if value.get("arch") != "src"]
+        if len(binaries) != len(set(binaries)):
+            raise PipelineError("Duplicate COPR binary package identity")
+        return sorted(binaries)
 
     def _output(self, path):
         path = Path(path)
@@ -233,6 +255,8 @@ class Publisher:
             or parsed.fragment
             or "%" in parsed.path
             or "\\" in parsed.path
+            or any(ord(character) <= 32 or ord(character) == 127 for character in url)
+            or "//" in parsed.path
             or any(part in (".", "..") for part in parsed.path.split("/"))
             or not url.startswith(prefix or self.base)
         ):
@@ -241,22 +265,19 @@ class Publisher:
 
     def _get(self, url, limit=16 * 1024 * 1024):
         parsed = urllib.parse.urlsplit(url)
+        redirect = NoRedirect()
         if url.startswith(API + "/api_3/"):
             if parsed.netloc != urllib.parse.urlsplit(API).netloc or parsed.fragment:
                 raise PipelineError("Invalid anonymous COPR API URL")
         else:
             self._safe_url(url)
+            if self.storage == "pulp" and (
+                url.startswith(self.repo) or url.startswith(self.devel)
+            ):
+                redirect = PulpRedirect(url)
         # Explicitly no netrc, cookies, auth handlers, inherited proxies, or
         # credential-file discovery in this transport.
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-        request = urllib.request.Request(url, headers={"Cache-Control": "no-cache"})
-        with opener.open(request, timeout=60) as response:
-            if response.geturl() != url:
-                raise PipelineError("Unpinned COPR response destination")
-            data = response.read(limit + 1)
-        if len(data) > limit:
-            raise PipelineError("COPR response exceeds the supported size limit")
-        return data
+        return read_content(url, limit, redirect)
 
     def _api(self, path, **parameters):
         url = API + "/api_3/" + path + "?" + urllib.parse.urlencode(parameters)
@@ -325,6 +346,12 @@ class Publisher:
                     field: (build.get("source_package") or {}).get(field)
                     for field in ("name", "version")
                 }
+                if self.storage == "pulp" and build["state"] in TERMINAL:
+                    builds[key]["packages"] = self._binary_identities(self._api(
+                        "build-chroot/built-packages",
+                        build_id=build["id"],
+                        chrootname=self.chroot,
+                    ))
             if len(page) < 100:
                 return builds
             offset += len(page)
@@ -373,12 +400,14 @@ class Publisher:
             or set(project.get("chroot_repos", {})) != {self.chroot}
             or project.get("follow_fedora_branching") is not False
             or project.get("packit_forge_projects_allowed") != []
-            or project.get("storage") != "backend"
+            or project.get("storage") not in ("backend", "pulp")
+            or project.get("chroot_repos", {}).get(self.chroot) != self.repo
         ):
             raise PipelineError(
-                "Require a dedicated backend-storage project, manual createrepo, "
+                "Require a dedicated backend/Pulp project, manual createrepo, "
                 "one fixed chroot, no network, extra repositories, Packit, or automatic branching"
             )
+        self.storage = project["storage"]
         for field in (
             "additional_repos", "additional_packages", "additional_modules",
             "with_opts", "without_opts",
@@ -404,7 +433,7 @@ class Publisher:
         # snapshot and the devel overlay. These are not third-party extras.
         expected = {
             "copr_base": self.repo,
-            "copr_base_devel": self.repo + "devel/",
+            "copr_base_devel": self.devel,
         }
         if (
             not isinstance(repositories, list)
@@ -418,7 +447,7 @@ class Publisher:
         ):
             raise PipelineError(
                 "Effective COPR overlays must be exactly this project's public and devel repositories; "
-                "unsupported backend URL/configuration requires review"
+                "unsupported storage URL/configuration requires review"
             )
         return {
             "project": project,
@@ -427,9 +456,12 @@ class Publisher:
         }
 
     def _repository(self, base):
+        if base not in (self.repo, self.devel):
+            raise PipelineError("Unexpected COPR repository base")
         try:
             repomd = self._get(base + "repodata/repomd.xml")
         except urllib.error.HTTPError as error:
+            error.close()
             if error.code != 404:
                 raise
             raise PipelineError(
@@ -450,7 +482,7 @@ class Publisher:
         checksum = entry.find("repo:checksum", NS)
         if location is None or checksum is None or checksum.get("type") != "sha256":
             raise PipelineError("Primary metadata must have a SHA256 checksum and location")
-        url = self._safe_url(urllib.parse.urljoin(base, location.get("href", "")), self.repo)
+        url = self._safe_url(urllib.parse.urljoin(base, location.get("href", "")), base)
         data = self._get(url, limit=64 * 1024 * 1024)
         if hashlib.sha256(data).hexdigest() != checksum.text:
             raise PipelineError("Primary repository metadata checksum mismatch")
@@ -496,12 +528,20 @@ class Publisher:
                 raise PipelineError("Duplicate NEVRA or unsupported package checksum")
             location_base = location.get("{http://www.w3.org/XML/1998/namespace}base")
             if location_base is not None:
-                if location_base.rstrip("/") != self.repo.rstrip("/"):
+                allowed_base = base if self.storage == "pulp" else self.repo
+                if location_base.rstrip("/") != allowed_base.rstrip("/"):
                     raise PipelineError("Unexpected explicit COPR package base URL")
                 # COPR passes a directory baseurl without a trailing slash to
                 # createrepo; urljoin alone would treat the chroot as a file.
-                location_base = self.repo
+                location_base = allowed_base
             url = urllib.parse.urljoin(location_base or base, location.get("href", ""))
+            if self.storage == "pulp":
+                if url != self._pulp_package_url(value, devel=base == self.devel):
+                    raise PipelineError("Pulp RPM location differs from its exact repository/NEVRA path")
+                # Both distributions reference the same bytes at different
+                # paths. Persist the stable public path for set comparisons;
+                # candidate downloads explicitly select the development path.
+                url = self._pulp_package_url(value)
             self._safe_url(url, self.repo)
             if PurePosixPath(urllib.parse.urlsplit(url).path).name != filename(value):
                 raise PipelineError("Repository filename/NEVRA mismatch")
@@ -522,9 +562,22 @@ class Publisher:
             "policy": policy,
             "inventory": before,
             "public": self._repository(self.repo),
-            "devel": self._repository(self.repo + "devel/"),
-            "key_sha256": hashlib.sha256(self._get(self.key_url)).hexdigest(),
+            "devel": self._repository(self.devel),
         }
+        try:
+            result["key_sha256"] = hashlib.sha256(self._get(self.key_url)).hexdigest()
+        except urllib.error.HTTPError as error:
+            error.close()
+            if (
+                error.code != 404
+                or self.storage != "pulp"
+                or result["public"]["packages"]
+                or result["devel"]["packages"]
+            ):
+                raise PipelineError("COPR signing key is missing; project initialization required") from None
+            # COPR exports the key during the first binary build. submit's
+            # explicit empty-project gate must authorize this bootstrap state.
+            result["key_sha256"] = None
         if before != self._inventory():
             raise PipelineError("COPR build inventory changed during the snapshot; retry safely")
         if policy != self._project_policy():
@@ -548,7 +601,8 @@ class Publisher:
             != [record["component"] for record in self.records]
         ):
             raise PipelineError("Recovery state belongs to a different manifest or COPR destination")
-        for entry, record in zip(state["builds"], self.records):
+        for index, record in enumerate(self.records):
+            entry = state["builds"][index]
             if (
                 entry.get("srpm") != record["srpm"]
                 or entry.get("srpm_sha256") != self.manifest["files"][record["srpm"]]
@@ -589,6 +643,13 @@ class Publisher:
             raise PipelineError("Development repodata changed without a recorded own build")
 
     def _upgrade_gate(self, snapshot):
+        if self.storage == "pulp":
+            previous = {
+                key for build in snapshot["inventory"].values()
+                for key in build.get("packages", [])
+            }
+            if previous.intersection(identity(value) for value in self.packages.values()):
+                raise PipelineError("Pulp candidate NEVRA was already used by a previous build")
         pairs = []
         for candidate in self.packages.values():
             for previous in snapshot["public"]["packages"].values():
@@ -598,7 +659,7 @@ class Publisher:
                         [str(previous[key]) for key in ("epoch", "version", "release")],
                     ])
         if pairs:
-            # submit runs in a trusted Fedora worker without a Docker socket.
+            # submit runs in a trusted Fedora worker without a container-engine socket.
             # validate is the only command allowed to launch test containers.
             try:
                 import rpm
@@ -639,9 +700,8 @@ class Publisher:
         result = self._authenticated_read(
             client.build_chroot_proxy.get_built_packages, entry["id"], self.chroot
         )
-        packages = result.get("packages", [])
         expected = {identity(self.packages[path]) for path in record["packages"]}
-        if len(packages) != len(expected) or {identity(value) for value in packages} != expected:
+        if set(self._binary_identities(result)) != expected:
             raise PipelineError("COPR-produced package NEVRAs differ from the validated local manifest")
         deadline = time.monotonic() + self.policy["timeout_seconds"]
         while True:
@@ -649,18 +709,57 @@ class Publisher:
             available = snapshot["devel"]["packages"]
             if expected.issubset(available):
                 artifacts = [available[key] for key in sorted(expected)]
-                if any(value["url"] != root + filename(value) for value in artifacts):
+                if any(
+                    value["url"] != (
+                        self._pulp_package_url(value) if self.storage == "pulp"
+                        else root + filename(value)
+                    )
+                    for value in artifacts
+                ):
                     raise PipelineError("Candidate metadata does not reference the recorded build")
                 self._check_build(
                     snapshot["inventory"][str(entry["id"])],
                     entry["component"],
                     completed=True,
                 )
-                self._assert_progress(self._read_state(), snapshot, artifacts)
+                state = self._read_state()
+                if self.storage == "pulp":
+                    if snapshot["inventory"][str(entry["id"])].get("packages") != sorted(expected):
+                        raise PipelineError("Pulp build inventory differs from recorded candidate NEVRAs")
+                    for key, build in snapshot["inventory"].items():
+                        if key != str(entry["id"]) and expected.intersection(build.get("packages", [])):
+                            raise PipelineError("Pulp candidate identity is ambiguous across build history")
+                    self._pin_bootstrap_key(state, snapshot, entry, artifacts)
+                self._assert_progress(state, snapshot, artifacts)
                 return artifacts, snapshot
             if time.monotonic() >= deadline:
                 raise PipelineError("Signed devel metadata did not converge; no further builds submitted")
             time.sleep(self.policy["poll_seconds"])
+
+    def _pin_bootstrap_key(self, state, snapshot, entry, artifacts):
+        if state["initial"]["key_sha256"] is not None:
+            return
+        initial = state["initial"]
+        if (
+            state.get("key_bootstrap") is not True
+            or self.storage != "pulp"
+            or initial["inventory"]
+            or initial["public"]["packages"]
+            or initial["devel"]["packages"]
+            or state["builds"][0].get("id") != entry["id"]
+            or any(build.get("id") for build in state["builds"][1:])
+            or set(snapshot["inventory"]) != {str(entry["id"])}
+            or snapshot["policy"] != initial["policy"]
+            or snapshot["public"] != initial["public"]
+            or snapshot["devel"]["packages"] != {identity(value): value for value in artifacts}
+            or not HEX256.fullmatch(snapshot.get("key_sha256") or "")
+        ):
+            raise PipelineError("Cannot bootstrap signing key outside the first recorded empty-project build")
+        # Persist this one-time trust transition before another build or any
+        # credential-free candidate execution. Subsequent key changes fail.
+        initial["key_sha256"] = snapshot["key_sha256"]
+        state["key_bootstrap"] = False
+        self._save(state)
 
     def submit(self):
         self._mutation_gate()
@@ -700,6 +799,10 @@ class Publisher:
                 raise PipelineError("Project has active unrelated builds")
             if initial["public"]["packages"] != initial["devel"]["packages"]:
                 raise PipelineError("Project has pre-existing unpublished candidates")
+            if initial["key_sha256"] is None and (
+                self.storage != "pulp" or initial["inventory"] or initial["public"]["packages"]
+            ):
+                raise PipelineError("Signing-key bootstrap requires a completely empty Pulp project")
             self._upgrade_gate(initial)
             state = {
                 "schema_version": 1,
@@ -714,6 +817,7 @@ class Publisher:
                 "destination": [self.owner, self.project, self.chroot],
                 "status": "building",
                 "initial": initial,
+                "key_bootstrap": initial["key_sha256"] is None,
                 "builds": [
                     {
                         "component": record["component"],
@@ -731,7 +835,8 @@ class Publisher:
         if state["status"] != "building":
             raise PipelineError("Publication is already promoting/promoted or requires manual recovery")
         client = None
-        for entry, record in zip(state["builds"], self.records):
+        for index, record in enumerate(self.records):
+            entry = state["builds"][index]
             if entry["status"] == "succeeded":
                 continue
             if entry["status"] == "submitting" and not entry.get("id"):
@@ -766,6 +871,9 @@ class Publisher:
             client = client or self._client()
             self._wait(client, entry)
             artifacts, snapshot = self._completed_artifacts(client, entry, record)
+            # Completion may have persisted the first-key bootstrap transition.
+            state = self._read_state()
+            entry = state["builds"][index]
             entry["artifacts"] = artifacts
             entry["inventory"] = snapshot["inventory"][str(entry["id"])]
             entry["status"] = "succeeded"
@@ -875,7 +983,7 @@ print(json.dumps(list(selected.values())))
         self._download(self.key_url, destination / "pubkey.gpg", snapshot["key_sha256"])
         for value in artifacts:
             self._download(
-                value["url"],
+                self._pulp_package_url(value, devel=True) if self.storage == "pulp" else value["url"],
                 destination / "rpms" / filename(value),
                 value["sha256"],
             )
@@ -949,9 +1057,17 @@ print(json.dumps(list(selected.values())))
 
     def _promotion_observation(self, state, snapshot):
         expected = state["submitted"]
-        for field in ("policy", "inventory", "devel", "key_sha256"):
+        for field in ("policy", "inventory", "key_sha256"):
             if snapshot[field] != expected[field]:
                 raise PipelineError("COPR state changed during promotion; no regeneration retry is safe")
+        # COPR's Pulp regeneration also republishes development metadata.
+        # Only that metadata refresh is allowed; the entire candidate set,
+        # checksums, policy, inventory and signing key must remain unchanged.
+        if (
+            snapshot["devel"]["packages"] != expected["devel"]["packages"]
+            or (self.storage != "pulp" and snapshot["devel"] != expected["devel"])
+        ):
+            raise PipelineError("COPR development candidates changed during promotion")
         if snapshot["public"]["packages"] == expected["devel"]["packages"]:
             return True
         if snapshot["public"] != expected["public"]:
