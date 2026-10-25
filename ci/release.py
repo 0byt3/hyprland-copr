@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import selectors
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,7 @@ from hyprland_copr.runtime import PODMAN, user_arguments
 from hyprland_copr.util import lock, read_json, save_json
 
 from .copr import Publication, check_credentials, destination
+from .notify import check_smtp_credentials, notify_failure
 
 
 def parser():
@@ -50,16 +52,37 @@ def timestamp():
 
 
 def run_logged(arguments, path, *, env=None):
-    print(f"Running {arguments[0]}; log: {path}", flush=True)
-    with path.open("w") as stream:
-        subprocess.run(
-            [str(value) for value in arguments],
+    command = [str(value) for value in arguments]
+    print(f"Running {command[0]}; log: {path}", flush=True)
+    with (
+        path.open("w") as stream,
+        selectors.DefaultSelector() as selector,
+        subprocess.Popen(
+            command,
             cwd=ROOT,
-            stdout=stream,
-            stderr=subprocess.STDOUT,
-            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
             env=env,
-        )
+        ) as process,
+    ):
+        for pipe, target in ((process.stdout, sys.stdout), (process.stderr, sys.stderr)):
+            if pipe is not None:
+                selector.register(pipe, selectors.EVENT_READ, target)
+        while selector.get_map():
+            for key, _ in selector.select():
+                chunk = os.read(key.fd, 4096)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                text = chunk.decode(errors="replace")
+                stream.write(text)
+                stream.flush()
+                key.data.write(text)
+                key.data.flush()
+        returncode = process.wait()
+    if returncode:
+        raise subprocess.CalledProcessError(returncode, command)
 
 
 def execute(arguments):
@@ -70,151 +93,179 @@ def execute(arguments):
     state = project_path(config["pipeline"]["state_directory"])
     # The checks mount the checkout read-only. Refuse misplaced credentials
     # before starting even checks-only/component runs.
-    check_credentials([ROOT, state, project_path(arguments.output)] if arguments.output else [
+    roots = [ROOT, state, project_path(arguments.output)] if arguments.output else [
         ROOT, state,
-    ], required=False)
-    # The CLI acquires the main state lock in its child process. This separate
-    # lock serializes whole local runs without deadlocking that child.
-    with lock(state / "automation"):
-        if arguments.output:
-            output = project_path(arguments.output)
-            if output.exists():
-                raise PipelineError("Use a new run directory; existing results are never reused")
-            output.mkdir(parents=True)
-        else:
-            parent = ROOT / "dist/runs"
-            parent.mkdir(parents=True, exist_ok=True)
-            prefix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-")
-            output = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
-        logs = output / "logs"
-        logs.mkdir()
-        bundle = output / "bundle"
-        result = {
-            "schema_version": 1,
-            "status": "running",
-            "started_at": timestamp(),
-            "component": "lua" if arguments.lua_only else arguments.component or "stack",
-            "version": arguments.version,
-            "checks_only": arguments.checks_only,
-            "publication_attempted": False,
-            "publication_status": "not-requested",
-            "publication_state": str(project_path(arguments.publication_state)),
-            "destination": destination(config),
-            "bundle": None,
-            "resolution": None,
-        }
-        save_json(output / "result.json", result)
-        print(f"Local run: {output}", flush=True)
-        phase = "checks-image"
+    ]
+    check_smtp_credentials(config, roots)
+    try:
+        check_credentials(roots, required=False)
+        # The CLI acquires the main state lock in its child process. This separate
+        # lock serializes whole local runs without deadlocking that child.
+        with lock(state / "automation"):
+            if arguments.output:
+                output = project_path(arguments.output)
+                if output.exists():
+                    raise PipelineError("Use a new run directory; existing results are never reused")
+                output.mkdir(parents=True)
+            else:
+                parent = ROOT / "dist/runs"
+                parent.mkdir(parents=True, exist_ok=True)
+                prefix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-")
+                output = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
+            logs = output / "logs"
+            logs.mkdir()
+            bundle = output / "bundle"
+            result = {
+                "schema_version": 1,
+                "status": "running",
+                "started_at": timestamp(),
+                "component": "lua" if arguments.lua_only else arguments.component or "stack",
+                "version": arguments.version,
+                "checks_only": arguments.checks_only,
+                "publication_attempted": False,
+                "publication_status": "not-requested",
+                "publication_state": str(project_path(arguments.publication_state)),
+                "destination": destination(config),
+                "bundle": None,
+                "resolution": None,
+            }
+            save_json(output / "result.json", result)
+            print(f"Local run: {output}", flush=True)
+            phase = "checks-image"
 
-        def progress(value):
-            nonlocal phase
-            phase = value
-            result.update({
-                "phase": phase,
-                "publication_attempted": True,
-                "publication_status": "running",
-            })
-            save_json(output / "result.json", result)
-        try:
-            run_logged([
-                *PODMAN, "build", "--layers", "--file", ROOT / "container/Checksfile",
-                "--tag", "hyprland-copr-checks", ROOT,
-            ], logs / "checks-image.log")
-            phase = "checks"
-            run_logged([
-                *PODMAN, "run", "--rm", "--pull=never", "--network=none", "--cap-drop=ALL",
-                "--security-opt=no-new-privileges",
-                *user_arguments(),
-                "--env", "HOME=/tmp", "--volume", f"{ROOT}:/workspace:ro,z",
-                "hyprland-copr-checks",
-            ], logs / "checks.log")
-            if not arguments.checks_only:
-                publication = None
-                pending = None
-                if (
-                    config["copr"]["publish"]
-                    and not arguments.no_publish
-                    and not arguments.component
-                    and not arguments.lua_only
-                ):
-                    phase = "publication-preflight"
-                    publication = Publication(
-                        config, state, project_path(arguments.publication_state),
-                        run_logged, logs, progress,
-                    )
-                    pending = publication.pending()
-                    if pending and arguments.version:
-                        raise PipelineError("Resume the pending publication without --version first")
-                if pending:
-                    bundle = pending
-                    result["publication_status"] = "resuming"
-                else:
-                    phase = "build"
-                    command = [sys.executable, "-u", "-m", "hyprland_copr"]
-                    if config_path:
-                        command.extend(["--config", config_path])
-                    command.extend([
-                        "run", "--output", bundle,
-                        "--resolution-output", output / "resolution.json",
-                        "--publication-state", project_path(arguments.publication_state),
-                    ])
-                    if publication:
-                        command.append("--skip-published")
-                    if arguments.version:
-                        command.extend(["--version", arguments.version])
-                    if arguments.lua_only:
-                        command.append("--lua-only")
-                    elif arguments.component:
-                        command.extend(["--component", arguments.component])
-                    run_logged(command, logs / "build.log")
-                    resolution_path = output / "resolution.json"
-                    if publication and not bundle.exists() and resolution_path.is_file():
-                        published = read_json(project_path(arguments.publication_state))
-                        if not already_published(config, read_json(resolution_path), published):
-                            raise PipelineError("Build returned no bundle or matching publication record")
-                        result["publication_status"] = "already-published"
-                        publication = None
-                phase = "verify"
-                if result["publication_status"] != "already-published":
-                    manifest = verify_bundle(bundle)
-                    result["bundle"] = str(bundle)
-                    if publication:
+            def progress(value):
+                nonlocal phase
+                phase = value
+                result.update({
+                    "phase": phase,
+                    "publication_attempted": True,
+                    "publication_status": "running",
+                })
+                save_json(output / "result.json", result)
+            try:
+                run_logged([
+                    *PODMAN, "build", "--layers", "--file", ROOT / "container/Checksfile",
+                    "--tag", "hyprland-copr-checks", ROOT,
+                ], logs / "checks-image.log")
+                phase = "checks"
+                run_logged([
+                    *PODMAN, "run", "--rm", "--pull=never", "--network=none", "--cap-drop=ALL",
+                    "--security-opt=no-new-privileges",
+                    *user_arguments(),
+                    "--env", "HOME=/tmp", "--volume", f"{ROOT}:/workspace:ro,z",
+                    "hyprland-copr-checks",
+                ], logs / "checks.log")
+                if not arguments.checks_only:
+                    publication = None
+                    pending = None
+                    if (
+                        config["copr"]["publish"]
+                        and not arguments.no_publish
+                        and not arguments.component
+                        and not arguments.lua_only
+                    ):
                         phase = "publication-preflight"
-                        publication.run(bundle, manifest)
-                        result["publication_status"] = "promoted"
-            result.update({
-                "status": "passed",
-                "exit_code": 0,
-                "finished_at": timestamp(),
-                "resolution": (
-                    str(output / "resolution.json")
-                    if (output / "resolution.json").is_file() else None
-                ),
-            })
-            save_json(output / "result.json", result)
-            print(f"Local checks{' and build validation' if not arguments.checks_only else ''} passed")
-            return 0
-        except (PipelineError, OSError, ValueError, subprocess.SubprocessError) as error:
-            code = error.returncode if isinstance(error, subprocess.CalledProcessError) else 1
-            if code < 0:
-                code = 128 - code
-            if result["publication_attempted"] or phase == "publication-preflight":
-                result["publication_status"] = "failed"
-            result.update({
-                "status": "blocked" if phase == "build" and code == 3 else "failed",
-                "phase": phase,
-                "exit_code": code,
+                        publication = Publication(
+                            config, state, project_path(arguments.publication_state),
+                            run_logged, logs, progress,
+                        )
+                        pending = publication.pending()
+                        if pending and arguments.version:
+                            raise PipelineError("Resume the pending publication without --version first")
+                    if pending:
+                        bundle = pending
+                        result["publication_status"] = "resuming"
+                    else:
+                        phase = "build"
+                        command = [sys.executable, "-u", "-m", "hyprland_copr"]
+                        if config_path:
+                            command.extend(["--config", config_path])
+                        command.extend([
+                            "run", "--output", bundle,
+                            "--resolution-output", output / "resolution.json",
+                            "--publication-state", project_path(arguments.publication_state),
+                        ])
+                        if publication:
+                            command.append("--skip-published")
+                        if arguments.version:
+                            command.extend(["--version", arguments.version])
+                        if arguments.lua_only:
+                            command.append("--lua-only")
+                        elif arguments.component:
+                            command.extend(["--component", arguments.component])
+                        run_logged(command, logs / "build.log")
+                        resolution_path = output / "resolution.json"
+                        if publication and not bundle.exists() and resolution_path.is_file():
+                            published = read_json(project_path(arguments.publication_state))
+                            if not already_published(config, read_json(resolution_path), published):
+                                raise PipelineError("Build returned no bundle or matching publication record")
+                            result["publication_status"] = "already-published"
+                            publication = None
+                    phase = "verify"
+                    if result["publication_status"] != "already-published":
+                        manifest = verify_bundle(bundle)
+                        result["bundle"] = str(bundle)
+                        if publication:
+                            phase = "publication-preflight"
+                            publication.run(bundle, manifest)
+                            result["publication_status"] = "promoted"
+                result.update({
+                    "status": "passed",
+                    "exit_code": 0,
+                    "finished_at": timestamp(),
+                    "resolution": (
+                        str(output / "resolution.json")
+                        if (output / "resolution.json").is_file() else None
+                    ),
+                })
+                save_json(output / "result.json", result)
+                print(
+                    f"Local checks{' and build validation' if not arguments.checks_only else ''} passed",
+                    flush=True,
+                )
+                return 0
+            except (PipelineError, OSError, ValueError, subprocess.SubprocessError) as error:
+                code = error.returncode if isinstance(error, subprocess.CalledProcessError) else 1
+                if code < 0:
+                    code = 128 - code
+                if result["publication_attempted"] or phase == "publication-preflight":
+                    result["publication_status"] = "failed"
+                result.update({
+                    "status": "blocked" if phase == "build" and code == 3 else "failed",
+                    "phase": phase,
+                    "exit_code": code,
+                    "finished_at": timestamp(),
+                    "error": str(error),
+                    "resolution": (
+                        str(output / "resolution.json")
+                        if (output / "resolution.json").is_file() else None
+                    ),
+                })
+                save_json(output / "result.json", result)
+                print(
+                    f"Local run {result['status']} during {phase}: {error}; see {logs}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                notify_failure(config, result, roots=[*roots, output], output=output)
+                return code
+    except (PipelineError, OSError, ValueError) as error:
+        notify_failure(
+            config,
+            {
+                "status": "failed",
+                "phase": "preflight",
+                "component": "lua" if arguments.lua_only else arguments.component or "stack",
+                "version": arguments.version,
+                "destination": destination(config),
+                "exit_code": 1,
+                "started_at": timestamp(),
                 "finished_at": timestamp(),
                 "error": str(error),
-                "resolution": (
-                    str(output / "resolution.json")
-                    if (output / "resolution.json").is_file() else None
-                ),
-            })
-            save_json(output / "result.json", result)
-            print(f"Local run {result['status']} during {phase}; see {logs}", file=sys.stderr)
-            return code
+            },
+            roots=roots,
+        )
+        raise
 
 
 def main(argv=None):
@@ -222,7 +273,7 @@ def main(argv=None):
     try:
         return execute(arguments)
     except (PipelineError, OSError, ValueError) as error:
-        print(f"Local automation stopped: {error}", file=sys.stderr)
+        print(f"Local automation stopped: {error}", file=sys.stderr, flush=True)
         return 1
 
 

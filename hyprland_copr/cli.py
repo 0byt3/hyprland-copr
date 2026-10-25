@@ -91,7 +91,7 @@ def execute(arguments):
     state = Path(config["pipeline"]["state_directory"]).resolve()
     if arguments.command == "verify":
         verify_bundle(arguments.bundle)
-        print("Bundle integrity and local validation status verified")
+        print("Bundle integrity and local validation status verified", flush=True)
         return 0
     if arguments.command.startswith("copr-"):
         from .publish import Publisher
@@ -150,23 +150,25 @@ def execute(arguments):
             save_json(state / "resolution.json", resolution)
             if arguments.resolution_output:
                 save_json(arguments.resolution_output, resolution)
-            print(f"Resolution: {state / 'resolution.json'}")
+            print(f"Resolution: {state / 'resolution.json'}", flush=True)
             if resolution["blockers"]:
                 for blocker in resolution["blockers"]:
                     print(
                         f"BLOCKED {blocker['consumer']}: {blocker['capability']} "
-                        f"{blocker['constraints']} ({blocker['origin']}): {blocker['reason']}"
+                        f"{blocker['constraints']} ({blocker['origin']}): {blocker['reason']}",
+                        file=sys.stderr,
+                        flush=True,
                     )
                 return 3
             if arguments.skip_published and already_published(config, resolution, published):
-                print("The complete selected source set is already recorded as published")
+                print("The complete selected source set is already recorded as published", flush=True)
                 return 0
-            print("Build order: " + " -> ".join(resolution["order"]))
+            print("Build order: " + " -> ".join(resolution["order"]), flush=True)
             if arguments.command == "resolve":
                 return 0
         manifest = Builder(config, state).build(resolution, arguments.output)
-        print(f"Validated bundle: {arguments.output.resolve()}")
-        print(f"Components built: {len(manifest['builds'])}")
+        print(f"Validated bundle: {arguments.output.resolve()}", flush=True)
+        print(f"Components built: {len(manifest['builds'])}", flush=True)
         return 0
 
 
@@ -176,7 +178,7 @@ def main():
     except (
         PipelineError, OSError, ValueError, urllib.error.URLError, subprocess.TimeoutExpired
     ) as error:
-        print(f"Pipeline stopped: {error}", file=sys.stderr)
+        print(f"Pipeline stopped: {error}", file=sys.stderr, flush=True)
         return 1
 
 

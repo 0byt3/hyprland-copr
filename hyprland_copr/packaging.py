@@ -7,7 +7,12 @@ import re
 import shutil
 
 from .config import ROOT
-from .components import APPLICATIONS, PORTAL_PREP, protocol_build_system
+from .components import (
+    APPLICATIONS,
+    PORTAL_PREP,
+    PORTAL_PROTOCOL_FILES,
+    protocol_build_system,
+)
 from .model import HYPR_ALIASES, PipelineError, Requirement, REPOSITORIES, source_repository
 from .util import sha256
 
@@ -65,10 +70,13 @@ def render_spec(source, requirements, release):
     }.get(name, "library")
     text = (ROOT / "packaging" / f"{template}.spec.in").read_text()
     license_expression, license_files = library_policy(source) if template == "library" else ("", "")
+    # RPM/createrepo_c primary.xml indexes /usr/bin and /etc paths, not
+    # /usr/share files; DNF5 builddep in COPR mock does not load filelists.
     expressions = sorted({
         expression
         for value in requirements
         for expression in Requirement.from_dict(value).expressions()
+        if not expression.startswith("/usr/share/")
     })
     udis = Path(source["directory"]) / "subprojects/udis86/configure.ac"
     udis_version = "1.7.2"
@@ -126,8 +134,14 @@ def render_spec(source, requirements, release):
         ),
         "APP_PREP": PORTAL_PREP if name == "xdg-desktop-portal-hyprland" else ":",
         "APP_BUILD_CHECK": (
-            "grep -Fx 'SDBUS_FOUND:INTERNAL=1' %{_vpath_builddir}/CMakeCache.txt\n"
-            "grep -Fx 'HYPRLAND_PROTOS_FOUND:INTERNAL=1' %{_vpath_builddir}/CMakeCache.txt"
+            "\n".join([
+                *(
+                    f"test -s %{{_datadir}}/hyprland-protocols/protocols/{filename}"
+                    for filename in PORTAL_PROTOCOL_FILES
+                ),
+                "grep -Fx 'SDBUS_FOUND:INTERNAL=1' %{_vpath_builddir}/CMakeCache.txt",
+                "grep -Fx 'HYPRLAND_PROTOS_FOUND:INTERNAL=1' %{_vpath_builddir}/CMakeCache.txt",
+            ])
             if name == "xdg-desktop-portal-hyprland" else ":"
         ),
         "APP_INSTALL": (

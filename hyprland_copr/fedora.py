@@ -66,8 +66,15 @@ class FedoraProviders:
 
     def query(self, expression):
         if expression not in self.cache:
+            options = [
+                *REPO_OPTIONS,
+                *(
+                    ["--setopt=optional_metadata_types=filelists"]
+                    if expression.startswith("/usr/share/") else []
+                ),
+            ]
             output = self.container.exec([
-                "dnf", *REPO_OPTIONS,
+                "dnf", *options,
                 "repoquery", "--available", "--arch=x86_64,noarch",
                 "--whatprovides", expression,
                 "--queryformat", "%{full_nevra}\\n",

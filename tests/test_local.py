@@ -1,14 +1,18 @@
+import copy
+import io
 import json
+import os
 from pathlib import Path
+import smtplib
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
-from ci import release
+from ci import notify, release
 from hyprland_copr import cli
-from hyprland_copr.config import ROOT, load_config
+from hyprland_copr.config import ROOT, load_config, load_smtp_config, smtp_configured
 from hyprland_copr.model import PipelineError
 from hyprland_copr.util import lock
 
@@ -24,7 +28,7 @@ class LocalAutomationTests(unittest.TestCase):
         for context in (
             patch.object(release, "ROOT", self.root),
             patch.object(release, "load_config", return_value=self.config),
-            patch.object(release.os, "getuid", return_value=1000),
+            patch.object(release.os, "getuid", return_value=os.getuid() or 1000),
         ):
             context.start()
             self.addCleanup(context.stop)
@@ -328,14 +332,28 @@ class LocalAutomationTests(unittest.TestCase):
 
     def test_logged_commands_run_locally_without_a_shell(self):
         path = self.root / "command.log"
-        with patch.object(release.subprocess, "run") as run:
-            release.run_logged(["podman", "probe"], path)
-        run.assert_called_once()
-        self.assertEqual(run.call_args.args[0], ["podman", "probe"])
-        self.assertEqual(run.call_args.kwargs["cwd"], self.root)
-        self.assertTrue(run.call_args.kwargs["check"])
-        self.assertNotIn("shell", run.call_args.kwargs)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            patch.object(release.subprocess, "Popen", wraps=release.subprocess.Popen) as popen,
+            patch.object(release.sys, "stdout", stdout),
+            patch.object(release.sys, "stderr", stderr),
+        ):
+            release.run_logged([
+                sys.executable, "-c",
+                "import sys; sys.stdout.write('out-line\\n'); sys.stderr.write('err-line\\n')",
+            ], path)
+        popen.assert_called_once()
+        self.assertEqual(popen.call_args.args[0][0], sys.executable)
+        self.assertEqual(popen.call_args.kwargs["cwd"], self.root)
+        self.assertNotIn("shell", popen.call_args.kwargs)
         self.assertTrue(path.is_file())
+        self.assertIn("out-line\n", path.read_text())
+        self.assertIn("err-line\n", path.read_text())
+        self.assertIn("out-line\n", stdout.getvalue())
+        self.assertIn("err-line\n", stderr.getvalue())
+        with self.assertRaises(subprocess.CalledProcessError):
+            release.run_logged([sys.executable, "-c", "raise SystemExit(7)"], path)
 
     def test_hosted_workflows_and_credential_helpers_are_absent(self):
         workflows = ROOT / ".github/workflows"
@@ -348,9 +366,166 @@ class LocalAutomationTests(unittest.TestCase):
         timer = (ROOT / "deploy/systemd/hyprland-copr.timer").read_text()
         self.assertIn("WorkingDirectory=%h/hyprland-copr", service)
         self.assertIn("ExecStart=/usr/bin/python3 -m ci.release", service)
+        self.assertIn("Environment=PYTHONUNBUFFERED=1", service)
+        self.assertIn("StandardOutput=journal", service)
+        self.assertIn("StandardError=journal", service)
+        self.assertIn("SyslogIdentifier=hyprland-copr", service)
         self.assertIn("Unit=hyprland-copr.service", timer)
         self.assertIn("Persistent=true", timer)
         self.assertNotIn("--publish", service)
+
+    def configured_smtp(self):
+        secret_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(secret_dir.cleanup)
+        password_file = Path(secret_dir.name) / "smtp-password"
+        password_file.write_text("super-secret-smtp-token\n")
+        password_file.chmod(0o600)
+        return {
+            "host": "smtp.example.com",
+            "port": 587,
+            "security": "starttls",
+            "username": "alerts@example.com",
+            "password_file": str(password_file),
+            "from_address": "alerts@example.com",
+            "to_addresses": ["operator@example.com"],
+            "timeout_seconds": 30,
+        }, password_file
+
+    def test_email_is_skipped_unless_all_required_smtp_values_are_filled(self):
+        self.assertFalse(smtp_configured(self.config))
+        full_smtp, _ = self.configured_smtp()
+        for missing_key, empty_value in (
+            ("host", ""),
+            ("port", 0),
+            ("security", ""),
+            ("username", ""),
+            ("password_file", ""),
+            ("from_address", ""),
+            ("to_addresses", []),
+        ):
+            with self.subTest(missing=missing_key):
+                partial = copy.deepcopy(self.config)
+                partial["smtp"] = {**full_smtp, missing_key: empty_value}
+                self.assertFalse(smtp_configured(partial))
+                with (
+                    patch.object(notify.smtplib, "SMTP") as smtp_cls,
+                    patch.object(notify.smtplib, "SMTP_SSL") as ssl_cls,
+                ):
+                    self.assertIsNone(notify.check_smtp_credentials(partial, [self.root]))
+                    self.assertFalse(notify.notify_failure(partial, {"status": "failed"}))
+                    smtp_cls.assert_not_called()
+                    ssl_cls.assert_not_called()
+
+    def test_error_sends_authenticated_starttls_and_tls_emails_when_configured(self):
+        full_smtp, _ = self.configured_smtp()
+        for index, security in enumerate(("starttls", "tls")):
+            with self.subTest(security=security):
+                self.config["smtp"] = {**full_smtp, "security": security}
+                client = MagicMock()
+                client.__enter__.return_value = client
+                client.ehlo.return_value = (250, b"OK")
+                client.send_message.return_value = {}
+                target = "SMTP_SSL" if security == "tls" else "SMTP"
+                with (
+                    patch.object(
+                        release, "run_logged",
+                        side_effect=subprocess.CalledProcessError(1, ["podman"]),
+                    ),
+                    patch.object(notify.smtplib, target, return_value=client) as factory,
+                ):
+                    args = release.parser().parse_args(["--output", f"dist/fail-{index}"])
+                    self.assertEqual(release.execute(args), 1)
+                factory.assert_called_once()
+                if security == "starttls":
+                    client.starttls.assert_called_once()
+                else:
+                    client.starttls.assert_not_called()
+                client.login.assert_called_once_with(
+                    "alerts@example.com", "super-secret-smtp-token",
+                )
+                client.send_message.assert_called_once()
+                message = client.send_message.call_args.args[0]
+                self.assertIn("[hyprland-copr] failed", message["Subject"])
+                self.assertIn("checks-image", message.get_content())
+
+    def test_smtp_password_file_must_be_protected_and_outside_checkout(self):
+        full_smtp, password_file = self.configured_smtp()
+        self.config["smtp"] = full_smtp
+        password_file.chmod(0o644)
+        with self.assertRaisesRegex(PipelineError, "mode 0600"):
+            notify.check_smtp_credentials(self.config, [self.root])
+        password_file.chmod(0o400)
+        self.assertEqual(notify.check_smtp_credentials(self.config, [self.root]), password_file)
+        with patch.object(notify.os, "getuid", return_value=(os.getuid() or 1000) + 1):
+            with self.assertRaisesRegex(PipelineError, "user-owned"):
+                notify.check_smtp_credentials(self.config, [self.root])
+        inside = self.root / "inside-secret"
+        inside.write_text("secret\n")
+        inside.chmod(0o600)
+        self.config["smtp"]["password_file"] = str(inside)
+        with self.assertRaisesRegex(PipelineError, "outside"):
+            notify.check_smtp_credentials(self.config, [self.root])
+
+    def test_smtp_example_is_tracked_and_live_smtp_file_is_gitignored(self):
+        gitignore = (ROOT / ".gitignore").read_text().splitlines()
+        self.assertIn("/config/smtp.toml", gitignore)
+        example = ROOT / "config/smtp.example.toml"
+        self.assertTrue(example.is_file())
+        parsed = load_smtp_config(example)
+        self.assertFalse(smtp_configured({"smtp": parsed}))
+        self.assertNotIn("[smtp]", (ROOT / "config/project.toml").read_text())
+
+    def test_smtp_aliases_and_invalid_settings_are_validated(self):
+        project_path = self.root / "project.toml"
+        smtp_path = self.root / "smtp.toml"
+        base = (ROOT / "config/project.toml").read_text()
+        project_path.write_text(base)
+        smtp_path.write_text(
+            '[smtp]\nserver = "mail.example.com"\nport = 465\nsecurity = "tls"\n'
+            'username = "user"\npassword_file = "/etc/secret"\n'
+            'from = "sender@example.com"\nto = ["dest@example.com"]\n'
+        )
+        loaded = load_config(project_path)
+        self.assertTrue(smtp_configured(loaded))
+        self.assertEqual(loaded["smtp"]["host"], "mail.example.com")
+        self.assertEqual(loaded["smtp"]["from_address"], "sender@example.com")
+        self.assertEqual(loaded["smtp"]["to_addresses"], ["dest@example.com"])
+        top_level = self.root / "top-level-smtp.toml"
+        top_level.write_text(
+            'server = "mail.example.com"\nport = 587\nsecurity = "starttls"\n'
+            'username = "user"\npassword_file = "/etc/secret"\n'
+            'from = "sender@example.com"\nto = ["dest@example.com"]\n'
+        )
+        self.assertTrue(smtp_configured(load_config(project_path, smtp_path=top_level)))
+        for invalid in (
+            'security = "plain"\n',
+            'from_address = "not-an-email"\n',
+            'password_file = "relative/path"\n',
+            'unknown_key = "value"\n',
+        ):
+            with self.subTest(invalid=invalid):
+                smtp_path.write_text("[smtp]\n" + invalid)
+                with self.assertRaises(PipelineError):
+                    load_config(project_path)
+
+    def test_smtp_transmission_failure_is_logged_to_stderr_without_masking_exit_code(self):
+        full_smtp, _ = self.configured_smtp()
+        self.config["smtp"] = full_smtp
+        stderr = io.StringIO()
+        with (
+            patch.object(
+                release, "run_logged",
+                side_effect=subprocess.CalledProcessError(3, ["build"]),
+            ),
+            patch.object(
+                notify.smtplib, "SMTP",
+                side_effect=smtplib.SMTPException("super-secret-smtp-token"),
+            ),
+            patch.object(sys, "stderr", stderr),
+        ):
+            self.assertEqual(release.execute(self.arguments()), 3)
+        self.assertIn("Failure notification email could not be sent (SMTPException)", stderr.getvalue())
+        self.assertNotIn("super-secret-smtp-token", stderr.getvalue())
 
 
 if __name__ == "__main__":
