@@ -1,0 +1,20 @@
+# Copy to config/smtp.toml (gitignored) and fill in all required fields to
+# enable failure notification emails. If config/smtp.toml is absent or any
+# required value is left empty, no email is sent.
+#
+# Keep the SMTP password in a separate user-owned file (mode 0600 or 0400)
+# outside the checkout, state, and artifact directories (for example,
+# /home/copr/.config/hyprland-copr/smtp-password).
+
+[smtp]
+host = ""
+port = 587
+# "starttls" (explicit STARTTLS, typically port 587) or "tls" (implicit TLS, typically port 465)
+security = "starttls"
+username = ""
+password_file = ""
+from_address = ""
+to_addresses = [
+    # "operator@example.com",
+]
+timeout_seconds = 30

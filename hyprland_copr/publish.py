@@ -849,6 +849,10 @@ class Publisher:
                 self._assert_progress(state, self._snapshot())
                 path = self._bundle_file(entry["srpm"])
                 client = client or self._client()
+                print(
+                    f"Submitting {entry['component']} ({entry['srpm']}) to COPR {self.owner}/{self.project}",
+                    flush=True,
+                )
                 entry["status"] = "submitting"
                 self._save(state)
                 try:
@@ -870,6 +874,7 @@ class Publisher:
                 entry["status"] = "waiting"
                 self._save(state)
             client = client or self._client()
+            print(f"Waiting for COPR build {entry['id']} ({entry['component']})", flush=True)
             self._wait(client, entry)
             artifacts, snapshot = self._completed_artifacts(client, entry, record)
             # Completion may have persisted the first-key bootstrap transition.
@@ -880,10 +885,12 @@ class Publisher:
             entry["status"] = "succeeded"
             state["checkpoint"] = snapshot
             self._save(state)
+            print(f"COPR build {entry['id']} ({entry['component']}) succeeded", flush=True)
         state["submitted"] = self._snapshot()
         self._assert_progress(state, state["submitted"])
         state["status"] = "submitted"
         self._save(state)
+        print(f"All {len(self.records)} COPR builds submitted and succeeded", flush=True)
         return state
 
     def _artifacts(self, state):
@@ -978,6 +985,10 @@ print(json.dumps(list(selected.values())))
         state.pop("validated", None)
         state["status"] = "submitted"
         self._save(state)
+        print(
+            f"Validating {len(artifacts)} signed COPR candidate RPMs for {self.owner}/{self.project}",
+            flush=True,
+        )
         destination = self.candidate_root
         self._output(destination / "rpms").mkdir(parents=True, exist_ok=True)
         self._output(destination / "logs").mkdir(exist_ok=True)
@@ -1039,6 +1050,7 @@ print(json.dumps(list(selected.values())))
         }
         state["status"] = "validated"
         self._save(state)
+        print("Signed COPR candidate validation passed", flush=True)
         return state
 
     def _validation_gate(self, state):
@@ -1099,6 +1111,10 @@ print(json.dumps(list(selected.values())))
             # the documented sole-writer prerequisite, not as a distributed CAS.
             if self._snapshot() != snapshot:
                 raise PipelineError("COPR state changed immediately before promotion")
+            print(
+                f"Promoting validated candidates to {self.owner}/{self.project} ({self.chroot})",
+                flush=True,
+            )
             state["status"] = "promoting"
             self._save(state)
             try:
@@ -1114,6 +1130,10 @@ print(json.dumps(list(selected.values())))
                 state["status"] = "promoted"
                 state["promotion"] = snapshot
                 self._save(state)
+                print(
+                    f"COPR public repository converged for {self.owner}/{self.project}",
+                    flush=True,
+                )
                 return state
             if time.monotonic() >= deadline:
                 raise PipelineError(

@@ -5,6 +5,10 @@ Description=Local Hyprland RPM validation and guarded COPR publication
 Type=oneshot
 WorkingDirectory=%h/hyprland-copr
 ExecStart=/usr/bin/python3 -m ci.release
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hyprland-copr
 TimeoutStartSec=infinity
 UMask=0077
 # Rootless Podman needs newuidmap/newgidmap; containers set no-new-privileges.

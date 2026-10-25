@@ -140,6 +140,7 @@ class Publication:
             "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=128",
             *user_arguments(),
             "--env", "HOME=/tmp", "--env", "PYTHONDONTWRITEBYTECODE=1",
+            "--env", "PYTHONUNBUFFERED=1",
             "--env", "COPR_CONFIG_FILE=/run/copr-config",
             "--volume", f"{ROOT / 'hyprland_copr'}:/workspace/hyprland_copr:ro,z",
             "--volume", f"{config_path}:/run/pipeline.toml:ro,z",
