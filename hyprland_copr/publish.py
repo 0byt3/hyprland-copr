@@ -297,6 +297,7 @@ class Publisher:
         with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".download-", delete=False) as stream:
             temporary = Path(stream.name)
             stream.write(data)
+        temporary.chmod(0o644)
         temporary.replace(destination)
 
     def _inventory(self):

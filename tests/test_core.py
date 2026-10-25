@@ -288,6 +288,19 @@ class PolicyTests(TemporaryTest):
         self.assertEqual(container.exec.call_count, 2)
         self.assertIn("--repo=fedora", REPO_OPTIONS)
         self.assertIn("--repo=updates", REPO_OPTIONS)
+        self.assertNotIn(
+            "--setopt=optional_metadata_types=filelists",
+            container.exec.call_args.args[0],
+        )
+        container.exec.side_effect = ["hyprland-protocols-0:0.7.0-1.fc44.noarch"]
+        self.assertEqual(
+            providers.query("/usr/share/hyprland-protocols/protocols/hyprland-input-capture-v1.xml"),
+            ["hyprland-protocols-0:0.7.0-1.fc44.noarch"],
+        )
+        self.assertIn(
+            "--setopt=optional_metadata_types=filelists",
+            container.exec.call_args.args[0],
+        )
 
     def test_builder_image_uses_native_podman_layer_caching(self):
         with patch("hyprland_copr.fedora.run", side_effect=["", "sha256:fixed-image"]) as run:
@@ -497,6 +510,22 @@ class BundleTests(TemporaryTest):
             with self.assertRaises(PipelineError):
                 Builder(load_config(), self.root).build({"status": "blocked"}, self.root / "out")
             build.assert_not_called()
+
+    def test_validate_imports_pinned_pubkey_when_present(self):
+        manifest = self.fixture()
+        (self.root / "logs").mkdir(exist_ok=True)
+        (self.root / "pubkey.gpg").write_bytes(b"public-key")
+        with (
+            patch("hyprland_copr.build.Container") as container_cls,
+            patch("hyprland_copr.build.offline_run"),
+        ):
+            container = container_cls.return_value.__enter__.return_value
+            container.exec.return_value = ""
+            Builder(load_config(), self.root).validate(self.root, manifest, "sha256:image")
+        self.assertEqual(
+            container.exec.call_args_list[0].args[0],
+            ["rpm", "--import", "/work/pubkey.gpg"],
+        )
 
 
 class PackagingTests(TemporaryTest):

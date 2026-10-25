@@ -287,6 +287,8 @@ class Builder:
             (destination, "/work", True),
             (ROOT / "tests", "/tests", True),
         ]) as container:
+            if (destination / "pubkey.gpg").is_file():
+                container.exec(["rpm", "--import", "/work/pubkey.gpg"])
             # Install the distribution baseline first. The next transaction is
             # an ordinary upgrade with full dependency checks, never --allowerasing.
             names = [

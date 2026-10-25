@@ -132,6 +132,17 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets)
         self.assertIn("qt6-qtwayland", capabilities)
         self.assertIn("grim", capabilities)
         self.assertIn("slurp", capabilities)
+        spec = render_spec(
+            self.source("xdg-desktop-portal-hyprland", "1.4.1"),
+            [value.to_dict() for value in requirements],
+            1,
+        )
+        self.assertIn("BuildRequires:  pkgconfig(hyprland-protocols) >= 0.7.0", spec)
+        self.assertNotIn("BuildRequires:  /usr/share/hyprland-protocols/protocols/", spec)
+        self.assertIn(
+            "test -s %{_datadir}/hyprland-protocols/protocols/hyprland-toplevel-mapping-v1.xml",
+            spec,
+        )
 
     def test_hidden_paper_and_pam_dependencies_are_checked(self):
         (self.root / "CMakeLists.txt").write_text("find_package(Threads REQUIRED)")
