@@ -30,6 +30,30 @@ def download(url, destination=None):
     return content
 
 
+def stable_tags(repository, limit=10):
+    releases = []
+    for page in range(1, 11):
+        values = json.loads(download(
+            f"https://api.github.com/repos/{repository}/tags?per_page=100&page={page}"
+        ))
+        if not isinstance(values, list):
+            raise PipelineError(f"Invalid tag response for {repository}")
+        for value in values:
+            tag = value.get("name", "")
+            try:
+                version_key(tag)
+            except PipelineError:
+                continue
+            releases.append({
+                "version": tag.removeprefix("v"),
+                "tag": tag,
+                "repository": repository,
+            })
+        if len(releases) >= limit or len(values) < 100:
+            break
+    return sorted(releases, key=lambda value: version_key(value["version"]), reverse=True)[:limit]
+
+
 def stable_releases(repository, limit=10):
     releases = []
     for page in range(1, 11):
@@ -53,6 +77,8 @@ def stable_releases(repository, limit=10):
             })
         if len(releases) >= limit or len(values) < 100:
             break
+    if not releases and repository == "Vladimir-csp/uwsm":
+        return stable_tags(repository, limit)
     return sorted(releases, key=lambda value: version_key(value["version"]), reverse=True)[:limit]
 
 
@@ -166,6 +192,15 @@ def validate_source_version(name, directory, expected):
         arguments = projects[0]
         index = arguments.index("VERSION") + 1
         actual = arguments[index] if index < len(arguments) else ""
+    elif name == "uwsm":
+        path = directory / "version.sh"
+        match = (
+            re.search(r"(?m)^VERSION=([0-9.]+)\s*$", path.read_text())
+            if path.is_file() else None
+        )
+        if not match:
+            raise PipelineError("uwsm version.sh layout changed; review the source adapter")
+        actual = match[1]
     else:
         path = directory / "VERSION"
         actual = path.read_text().strip() if path.exists() else ""

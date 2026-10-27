@@ -69,6 +69,9 @@ REPOSITORIES = {
     "hyprpaper": "hyprwm/hyprpaper",
     "hyprlock": "hyprwm/hyprlock",
     "hypridle": "hyprwm/hypridle",
+    "hyprpicker": "hyprwm/hyprpicker",
+    "hyprsunset": "hyprwm/hyprsunset",
+    "uwsm": "Vladimir-csp/uwsm",
     "xdg-desktop-portal-hyprland": "hyprwm/xdg-desktop-portal-hyprland",
     "glaze": "stephenberry/glaze",
     "hyprland-protocols": "hyprwm/hyprland-protocols",
@@ -78,6 +81,9 @@ COMPANIONS = (
     "hyprpaper",
     "hyprlock",
     "hypridle",
+    "hyprpicker",
+    "hyprsunset",
+    "uwsm",
     "xdg-desktop-portal-hyprland",
 )
 ROOT_COMPONENTS = (

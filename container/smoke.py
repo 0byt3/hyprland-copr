@@ -13,6 +13,9 @@ APPLICATION_BINARIES = {
     "hyprpaper": "/usr/bin/hyprpaper",
     "hyprlock": "/usr/bin/hyprlock",
     "hypridle": "/usr/bin/hypridle",
+    "hyprpicker": "/usr/bin/hyprpicker",
+    "hyprsunset": "/usr/bin/hyprsunset",
+    "uwsm": "/usr/bin/uwsm",
     "xdg-desktop-portal-hyprland": "/usr/libexec/xdg-desktop-portal-hyprland",
 }
 APPLICATION_ASSETS = {
@@ -26,6 +29,28 @@ APPLICATION_ASSETS = {
     "hypridle": (
         "/usr/lib/systemd/user/hypridle.service",
         "/usr/share/hypr/hypridle.conf",
+    ),
+    "hyprpicker": (
+        "/usr/share/man/man1/hyprpicker.1.gz",
+    ),
+    "hyprsunset": (
+        "/usr/lib/systemd/user/hyprsunset.service",
+    ),
+    "uwsm": (
+        "/usr/bin/uwsm-app",
+        "/usr/bin/uuctl",
+        "/usr/bin/fumon",
+        "/usr/bin/ttyautolock",
+        "/usr/bin/wait-tray",
+        "/usr/libexec/uwsm/prepare-env.sh",
+        "/usr/libexec/uwsm/signal-handler.sh",
+        "/usr/share/uwsm/modules/uwsm/main.py",
+        "/usr/share/uwsm/plugins/hyprland.sh",
+        "/usr/share/applications/uuctl.desktop",
+        "/usr/lib/systemd/user/wayland-wm@.service",
+        "/usr/lib/systemd/user-preset/80-fumon.preset",
+        "/usr/share/man/man1/uwsm.1.gz",
+        "/usr/share/man/man3/uwsm-plugins.3.gz",
     ),
     "xdg-desktop-portal-hyprland": (
         "/usr/bin/hyprland-share-picker",

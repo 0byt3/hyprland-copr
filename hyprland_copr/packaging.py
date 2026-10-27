@@ -67,6 +67,7 @@ def render_spec(source, requirements, release):
         "hyprland-protocols": "protocols",
         "glaze": "glaze",
         **{component: "application" for component in APPLICATIONS},
+        "uwsm": "uwsm",
     }.get(name, "library")
     text = (ROOT / "packaging" / f"{template}.spec.in").read_text()
     license_expression, license_files = library_policy(source) if template == "library" else ("", "")
@@ -97,6 +98,7 @@ def render_spec(source, requirements, release):
         "RELEASE": str(release),
         "SUMMARY": f"{name} library for the Hyprland stack",
         "UPSTREAM": repository.split("/")[-1],
+        "UPSTREAM_REPO": repository,
         "LIBRARY_LICENSE": license_expression,
         "LIBRARY_LICENSE_FILES": license_files,
         "RUNTIME_PROVIDES": "\n".join(

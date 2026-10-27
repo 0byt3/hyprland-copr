@@ -71,6 +71,33 @@ class ComponentTests(unittest.TestCase):
         with self.assertRaises(PipelineError):
             validate_source_version("glaze", self.root, "7.9.1")
 
+    def test_uwsm_uses_version_sh_and_meson_adapter(self):
+        (self.root / "version.sh").write_text("#!/bin/sh\nVERSION=0.27.1\necho \"$VERSION\"\n")
+        validate_source_version("uwsm", self.root, "0.27.1")
+        with self.assertRaises(PipelineError):
+            validate_source_version("uwsm", self.root, "0.26.0")
+        (self.root / "meson.build").write_text(
+            "project('uwsm', version: '0.27.1', license: 'MIT', meson_version: '>=1.3.0')\n"
+        )
+        requirements = discover({
+            "name": "uwsm",
+            "directory": str(self.root),
+        })
+        capabilities = {value.capability for value in requirements}
+        self.assertIn("meson", capabilities)
+        self.assertIn("pkgconfig(scdoc)", capabilities)
+        self.assertIn("python3-dbus", capabilities)
+        self.assertIn("python3-pyxdg", capabilities)
+        spec = render_spec(
+            self.source("uwsm", "0.27.1"),
+            [value.to_dict() for value in requirements],
+            1,
+        )
+        self.assertIn("BuildArch:      noarch", spec)
+        self.assertIn("URL:            https://github.com/Vladimir-csp/uwsm", spec)
+        self.assertIn("-Duwsm-app=enabled", spec)
+        self.assertIn("export PYTHONDONTWRITEBYTECODE=1", spec)
+
     def test_glaze_disabled_developer_features_are_not_dependencies(self):
         for relative in (
             "cmake/prelude.cmake",
@@ -157,6 +184,14 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets)
             ("hyprlock", {
                 "pam-devel",
                 "pam",
+                "pkgconfig(wayland-scanner)",
+            }),
+            ("hyprpicker", {
+                "pkgconfig(wayland-cursor)",
+                "pkgconfig(wayland-scanner)",
+            }),
+            ("hyprsunset", {
+                "pkgconfig(wayland-cursor)",
                 "pkgconfig(wayland-scanner)",
             }),
         ):
@@ -705,10 +740,17 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets)
             "%{_libexecdir}": "/usr/libexec",
             "%{_userunitdir}": "/usr/lib/systemd/user",
             "%{_datadir}": "/usr/share",
+            "%{_mandir}": "/usr/share/man",
             "%{_sysconfdir}": "/etc",
             "%config(noreplace) ": "",
+            "hyprpicker.1*": "hyprpicker.1.gz",
         }
         for name in COMPANIONS:
+            if name == "uwsm":
+                self.assertIn("/usr/bin/uwsm-app", smoke.APPLICATION_ASSETS[name])
+                self.assertIn("/usr/lib/systemd/user/wayland-wm@.service", smoke.APPLICATION_ASSETS[name])
+                self.assertIn("/usr/share/uwsm/plugins/hyprland.sh", smoke.APPLICATION_ASSETS[name])
+                continue
             expected = set()
             for entry in APPLICATIONS[name]["files"]:
                 for macro, value in macros.items():

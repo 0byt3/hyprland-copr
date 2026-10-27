@@ -217,7 +217,7 @@ class Builder:
                         log=destination / f"logs/{name}-build.log",
                     )
             trace = work / "trace.jsonl"
-            if name != "lua" and (
+            if name not in ("lua", "uwsm") and (
                 name != "hyprland-protocols" or protocol_build_system(source["directory"]) == "cmake"
             ):
                 if not trace.exists():
@@ -327,7 +327,7 @@ class Builder:
             save_json(destination / "baseline.json", baseline)
             (destination / "baseline.json").chmod(0o644)
             container.exec([
-                "dnf", *REPO_OPTIONS, "-y", "install",
+                "dnf", *REPO_OPTIONS, "--setopt=tsflags=", "-y", "install",
                 *[
                     f"/work/{value['file']}"
                     for value in manifest["packages"]

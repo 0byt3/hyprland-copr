@@ -353,6 +353,22 @@ def discover(source):
             Requirement("ninja-build", origin="Protocol Meson adapter"),
             Requirement("pkgconf-pkg-config", origin="Protocol metadata validation"),
         ]
+    if name == "uwsm":
+        text = (root / "meson.build").read_text() if (root / "meson.build").is_file() else ""
+        minimum = re.search(r"meson_version:\s*'>=\s*([0-9.]+)'", text)
+        if not minimum:
+            raise PipelineError("uwsm Meson layout changed; review the bounded source adapter")
+        return [
+            Requirement("meson", ((">=", minimum[1]),), "uwsm Meson adapter"),
+            Requirement("ninja-build", origin="uwsm Meson adapter"),
+            Requirement("pkgconf-pkg-config", origin="uwsm Meson adapter"),
+            Requirement("pkgconfig(scdoc)", ((">=", "1.9.2"),), "uwsm manpage adapter"),
+            Requirement("python3", ((">=", "3.10"),), "uwsm Python adapter"),
+            *[
+                Requirement(package, origin="uwsm runtime packaging policy")
+                for package in APPLICATIONS["uwsm"]["runtime"]
+            ],
+        ]
     if name == "glaze":
         # Only these library entrypoints execute with developer mode disabled.
         # Optional Asio/Erlang discovery and developer helpers are not active.
@@ -466,10 +482,15 @@ def discover(source):
         requirements.append(Requirement("python3", origin="Required Lua stub generator"))
     if name in (
         "hyprland", "aquamarine", "hyprpaper", "hyprlock", "hypridle",
+        "hyprpicker", "hyprsunset",
         "xdg-desktop-portal-hyprland", "hyprtoolkit",
     ):
         requirements.append(Requirement(
             "pkgconfig(wayland-scanner)", origin="Core Wayland XML generation adapter"
+        ))
+    if name in ("hyprpicker", "hyprsunset"):
+        requirements.append(Requirement(
+            "pkgconfig(wayland-cursor)", origin=f"{name} direct-link adapter"
         ))
     if name == "hyprpaper":
         requirements.extend([

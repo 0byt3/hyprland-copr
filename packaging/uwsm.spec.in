@@ -1,0 +1,46 @@
+Name:           uwsm
+Version:        @VERSION@
+Release:        @RELEASE@%{?dist}
+Summary:        @APP_SUMMARY@
+License:        @APP_LICENSE@
+URL:            https://github.com/@UPSTREAM_REPO@
+Source0:        uwsm-@VERSION@.tar.gz
+BuildArch:      noarch
+@BUILD_REQUIRES@
+BuildRequires:  systemd-rpm-macros
+@RUNTIME_REQUIRES@
+
+%description
+@APP_SUMMARY@.
+Built with the selected Fedora Hyprland dependency stack.
+
+%prep
+%autosetup
+
+%build
+export SOURCE_DATE_EPOCH=@EPOCH@
+%meson --wrap-mode=nodownload \
+    @APP_OPTIONS@
+%meson_build
+
+%install
+%meson_install
+rm -rf %{buildroot}%{_datadir}/licenses/uwsm
+sed -i '1{/^#!\/bin\/false$/d}' %{buildroot}%{_datadir}/uwsm/plugins/*.sh
+
+%check
+mkdir -p .smoke-home/config .smoke-home/runtime
+chmod 700 .smoke-home/runtime
+export HOME="$PWD/.smoke-home"
+export XDG_CONFIG_HOME="$HOME/config"
+export XDG_RUNTIME_DIR="$HOME/runtime"
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="%{buildroot}%{_datadir}/uwsm/modules"
+unset WAYLAND_DISPLAY DISPLAY DBUS_SESSION_BUS_ADDRESS
+timeout 10 %{buildroot}@APP_BINARY@ --help
+timeout 10 %{buildroot}@APP_BINARY@ --version
+
+%files
+%license @APP_LICENSE_FILES@
+%doc %{_docdir}/uwsm
+@APP_FILES@

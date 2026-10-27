@@ -185,6 +185,9 @@ class QualityTests(unittest.TestCase):
             "hypridle",
             "hyprlock",
             "hyprpaper",
+            "hyprpicker",
+            "hyprsunset",
+            "uwsm",
             "xdg-desktop-portal-hyprland",
         ):
             with self.subTest(component=name):
