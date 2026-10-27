@@ -101,6 +101,21 @@ APPLICATIONS = {
         "runtime": (),
         "options": (),
     },
+    "hyprland-guiutils": {
+        "summary": "Hyprland dialog and graphical utilities",
+        "license": "BSD-3-Clause",
+        "license_files": ("LICENSE",),
+        "binary": "%{_bindir}/hyprland-dialog",
+        "files": (
+            "%{_bindir}/hyprland-dialog",
+            "%{_bindir}/hyprland-donate-screen",
+            "%{_bindir}/hyprland-update-screen",
+            "%{_bindir}/hyprland-welcome",
+            "%{_bindir}/hyprland-run",
+        ),
+        "runtime": (),
+        "options": (),
+    },
     "uwsm": {
         "summary": "Universal Wayland Session Manager",
         "license": "MIT",

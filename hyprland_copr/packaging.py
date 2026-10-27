@@ -126,6 +126,7 @@ def render_spec(source, requirements, release):
         "APP_LICENSE": application.get("license", ""),
         "APP_LICENSE_FILES": " ".join(application.get("license_files", ())),
         "APP_BINARY": application.get("binary", ""),
+        "APP_VERSION_OPTION": "--help" if name == "hyprland-guiutils" else "--version",
         "APP_FILES": "\n".join(application.get("files", ())),
         "APP_OPTIONS": " ".join(
             option.format(commit=source["commit"]) for option in application.get("options", ())

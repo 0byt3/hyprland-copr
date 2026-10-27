@@ -42,7 +42,7 @@ export XDG_CONFIG_HOME="$HOME/config"
 export XDG_RUNTIME_DIR="$HOME/runtime"
 unset WAYLAND_DISPLAY DISPLAY DBUS_SESSION_BUS_ADDRESS
 timeout 10 %{buildroot}@APP_BINARY@ --help
-timeout 10 %{buildroot}@APP_BINARY@ --version
+timeout 10 %{buildroot}@APP_BINARY@ @APP_VERSION_OPTION@
 
 %files
 %license @APP_LICENSE_FILES@

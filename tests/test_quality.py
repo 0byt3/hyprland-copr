@@ -187,6 +187,7 @@ class QualityTests(unittest.TestCase):
             "hyprpaper",
             "hyprpicker",
             "hyprsunset",
+            "hyprland-guiutils",
             "uwsm",
             "xdg-desktop-portal-hyprland",
         ):

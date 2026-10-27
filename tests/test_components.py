@@ -522,7 +522,7 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets)
             "source_versions": source_versions(resolution),
             "primaries": resolution["primaries"],
             "generation": 9,
-            "root_release": rpm_release(resolution, 1) + ".fc44",
+            "root_release": rpm_release(resolution, config["pipeline"]["release"]) + ".fc44",
         }
         self.assertTrue(already_published(config, resolution, published))
         self.assertFalse(already_published(config, resolution, {
@@ -546,7 +546,7 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets)
             **published,
             "source_versions": None,
         }))
-        config["pipeline"]["release"] = 2
+        config["pipeline"]["release"] += 1
         self.assertFalse(already_published(config, resolution, published))
 
     def test_stack_generation_changes_releases_of_unchanged_libraries(self):
@@ -617,6 +617,31 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets)
         save_json(bundle / "manifest.json", manifest)
         with self.assertRaisesRegex(PipelineError, "generation"):
             verify_bundle(bundle)
+
+    def test_guiutils_is_a_required_source_built_hyprland_runtime(self):
+        (self.root / "CMakeLists.txt").write_text("find_package(Threads REQUIRED)")
+        requirements = discover({"name": "hyprland", "directory": str(self.root)})
+        dialog = next(value for value in requirements if value.capability == "/usr/bin/hyprland-dialog")
+        self.assertEqual(dialog.managed, "hyprland-guiutils")
+        source = self.source("hyprland-guiutils", "0.2.2")
+        spec = render_spec(source, [], 1)
+        self.assertIn("hyprland-dialog --help", spec)
+        self.assertNotIn("--version", spec)
+        self.assertIn("Requires:       hyprland-guiutils", (ROOT / "packaging/hyprland.spec.in").read_text())
+
+    def test_guiutils_smoke_checks_version_from_help_without_opening_windows(self):
+        with (
+            patch.object(smoke, "check_assets"),
+            patch.object(smoke.subprocess, "run", return_value=Mock(
+                stdout="hyprland-dialog, part of hyprland-guiutils v0.2.2", stderr="",
+            )) as run,
+        ):
+            smoke.check_applications([{"name": "hyprland-guiutils", "version": "0.2.2"}])
+            run.assert_called_once()
+            self.assertEqual(run.call_args.args[0], ["/usr/bin/hyprland-dialog", "--help"])
+            run.return_value.stdout = "hyprland-guiutils v0.1.0"
+            with self.assertRaisesRegex(RuntimeError, "unexpected version"):
+                smoke.check_applications([{"name": "hyprland-guiutils", "version": "0.2.2"}])
 
     def test_smoke_never_runs_picker_or_connects_a_real_session(self):
         with (

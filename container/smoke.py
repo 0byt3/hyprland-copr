@@ -15,6 +15,7 @@ APPLICATION_BINARIES = {
     "hypridle": "/usr/bin/hypridle",
     "hyprpicker": "/usr/bin/hyprpicker",
     "hyprsunset": "/usr/bin/hyprsunset",
+    "hyprland-guiutils": "/usr/bin/hyprland-dialog",
     "uwsm": "/usr/bin/uwsm",
     "xdg-desktop-portal-hyprland": "/usr/libexec/xdg-desktop-portal-hyprland",
 }
@@ -35,6 +36,12 @@ APPLICATION_ASSETS = {
     ),
     "hyprsunset": (
         "/usr/lib/systemd/user/hyprsunset.service",
+    ),
+    "hyprland-guiutils": (
+        "/usr/bin/hyprland-donate-screen",
+        "/usr/bin/hyprland-update-screen",
+        "/usr/bin/hyprland-welcome",
+        "/usr/bin/hyprland-run",
     ),
     "uwsm": (
         "/usr/bin/uwsm-app",
@@ -108,7 +115,9 @@ def check_applications(packages):
             }
             for variable in ("WAYLAND_DISPLAY", "DISPLAY", "DBUS_SESSION_BUS_ADDRESS"):
                 environment.pop(variable, None)
-            for option in ("--help", "--version"):
+            # GUI utilities expose their version in --help and reject --version.
+            options = ("--help",) if name == "hyprland-guiutils" else ("--help", "--version")
+            for option in options:
                 result = subprocess.run(
                     [APPLICATION_BINARIES[name], option],
                     env=environment,
@@ -118,7 +127,7 @@ def check_applications(packages):
                     timeout=10,
                 )
                 text = result.stdout + result.stderr
-                if option == "--version" and not re.search(
+                if (option == "--version" or name == "hyprland-guiutils") and not re.search(
                     rf"\bv?{re.escape(package['version'])}\b", text
                 ):
                     raise RuntimeError(f"Installed {name} reports an unexpected version")

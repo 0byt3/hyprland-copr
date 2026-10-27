@@ -71,6 +71,7 @@ REPOSITORIES = {
     "hypridle": "hyprwm/hypridle",
     "hyprpicker": "hyprwm/hyprpicker",
     "hyprsunset": "hyprwm/hyprsunset",
+    "hyprland-guiutils": "hyprwm/hyprland-guiutils",
     "uwsm": "Vladimir-csp/uwsm",
     "xdg-desktop-portal-hyprland": "hyprwm/xdg-desktop-portal-hyprland",
     "glaze": "stephenberry/glaze",
@@ -83,6 +84,7 @@ COMPANIONS = (
     "hypridle",
     "hyprpicker",
     "hyprsunset",
+    "hyprland-guiutils",
     "uwsm",
     "xdg-desktop-portal-hyprland",
 )
@@ -106,6 +108,10 @@ MANAGED_CAPABILITIES = {
 SOURCE_POLICY = "hypr-prefix-v1"
 HYPR_ALIASES = {
     "hyprwire-scanner": "hyprwire",
+    **{name: "hyprland-guiutils" for name in (
+        "hyprland-dialog", "hyprland-donate-screen", "hyprland-update-screen",
+        "hyprland-welcome", "hyprland-run",
+    )},
 }
 
 

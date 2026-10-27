@@ -61,7 +61,7 @@ python3 -m hyprland_copr build .state/resolution.json --output dist/retry
 python3 -m hyprland_copr verify dist/retry
 ```
 
-Discovery, resolution, image preparation, and dependency transactions need network access; compilation and runtime checks are offline. Core `run` builds and validates but never publishes. Without `--component`, the primary is Hyprland and its four companions are independently selected at their own stable releases; `--version` then pins only Hyprland. `--component NAME` builds that component and its dependency closure. `--component lua` and `--lua-only` are equivalent.
+Discovery, resolution, image preparation, and dependency transactions need network access; compilation and runtime checks are offline. Core `run` builds and validates but never publishes. Without `--component`, the primary is Hyprland and its companions are independently selected at their own stable releases; `--version` then pins only Hyprland. `--component NAME` builds that component and its dependency closure. `--component lua` and `--lua-only` are equivalent.
 
 Use a new/empty bundle output directory; partial artifacts are not overwritten. Saved resolutions retain absolute cache/source paths. Resolution exits with 3 for dependency blockers, 1 for operational/unsupported-source failures, and 0 on success.
 

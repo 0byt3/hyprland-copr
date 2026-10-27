@@ -8,7 +8,7 @@ Active optional hypr probes are included too; known disabled build branches rema
 
 The default coordinated stack selects each application's own stable release and resolves their shared dependencies together. Every Git submodule is initialized recursively at its recorded revision; profiling stays disabled. Unknown repositories, incompatible stable releases, unsupported packaging layouts and unreviewed licenses stop the pipeline explicitly rather than silently using Fedora or skipping a hypr dependency. New libraries can use the bounded shared-library/header/pkg-config adapter with the reviewed BSD-3-Clause license form; other layouts or bundled notices require adapter review.
 
-The complete 16-component coordinated stack, including Hyprland 0.56.2 and all four companion applications, has passed a real Fedora 44 build and headless install/upgrade validation. A separate Fedora 44 VM session has also passed the graphical checks described below. Hyprland 0.56.2's `>=7,<8` Glaze requirement selects compatible Glaze 7.x, not the newer incompatible 8.x/9.x majors.
+An earlier 16-component coordinated stack, including Hyprland 0.56.2 and four companion applications, passed a real Fedora 44 build and headless install/upgrade validation. A separate Fedora 44 VM session has also passed the graphical checks described below. Hyprland 0.56.2's `>=7,<8` Glaze requirement selects compatible Glaze 7.x, not the newer incompatible 8.x/9.x majors.
 
 ## Local use
 Requirements: Python 3.11 or newer, Git, native rootless Podman, and network access for source acquisition and Fedora repository transactions. Install these through your distribution's repositories. No Docker engine, Docker compatibility package, container-engine socket, or privileged automation account is needed. Compilation tooling is installed from Fedora repositories inside containers, not on the host.
@@ -23,7 +23,7 @@ python3 -m hyprland_copr resolve
 python3 -m hyprland_copr run --output dist/stack
 ```
 
-Without `--component`, `--version 0.56.2` selects Hyprland's version; the four companions are selected independently. The candidate search is bounded by `pipeline.max_candidates`, including older compatible Glaze majors. Increase that configured window if a required compatible release falls outside it. `resolve` exits with code 3 for a missing dependency, 1 for an operational/unsupported-source error, and 0 for a resolved graph. `run` never builds a blocked graph.
+Without `--component`, `--version 0.56.2` selects Hyprland's version; the companions are selected independently. The candidate search is bounded by `pipeline.max_candidates`, including older compatible Glaze majors. Increase that configured window if a required compatible release falls outside it. `resolve` exits with code 3 for a missing dependency, 1 for an operational/unsupported-source error, and 0 for a resolved graph. `run` never builds a blocked graph.
 
 Build or resolve one component and its required dependencies:
 
@@ -61,7 +61,7 @@ Coordinated RPM releases include the compositor version and a persisted generati
 * Runtime validation has read-only artifact mounts and no network or publication credentials. It cannot establish GPU/session correctness or compatibility with arbitrary third-party plugins.
 * Glaze is a noarch `glaze-devel` RPM from a `glaze` SRPM, with headers and `cmake(glaze)` metadata, not a fictional shared-library/runtime package. Its C++23 JSON consumer is compiled and run against both staged and installed CMake metadata.
 * hyprtoolkit is split into a runtime shared-library RPM and a development RPM. Its `BSD-3-Clause AND HPND-sell-variant` license expression includes the embedded layer-shell protocol notice. Graphical toolkit test applications stay disabled.
-* The four companion daemons get isolated, time-bounded `--help`/`--version` and installed-file checks. User units and portal/D-Bus registration are packaged but never enabled or started during validation. The graphical share picker is checked as an installed executable, not launched.
+* Companions get isolated, time-bounded CLI and installed-file checks (`--help`/`--version`, or version-bearing `--help` for GUI utilities). User units and portal/D-Bus registration are packaged but never enabled or started during validation. The graphical share picker is checked as an installed executable, not launched.
 * hyprlock installs a Fedora-oriented `%config(noreplace)` PAM service at `/etc/pam.d/hyprlock`, including `system-auth` for auth/account checks. The package never edits global `system-auth` or authselect profiles. Container checks verify packaging, not real PAM authentication or lock safety; those need separate graphical/security validation.
 
 `hyprland` retains Fedora's package name. A candidate must have a strictly newer RPM Epoch-Version-Release before it is accepted as an upgrade. Hyprland plugin headers are split into `hyprland-devel`; plugins need rebuilding for the exact compositor version.
@@ -212,7 +212,7 @@ python3 -m ci.release --lua-only --version 5.5.1
 
 The `ci` package is just local Python tooling, not a hosted CI service. The runner builds the Fedora checks image, executes all repository checks offline in a non-root container, then calls the existing local build/validation CLI. Image preparation, release discovery, and dependency downloads need network access; local compilation and runtime tests stay offline.
 
-Complete-stack runs automatically publish only after local QA, all builds, runtime validation, and bundle integrity verification succeed. The manifest must use the current source policy and select Hyprland plus all four companion applications. Submission is followed by local validation of the signed COPR candidates; only then is public metadata regenerated and checked for convergence. Any failed gate stops later phases. `--checks-only`, `--component`, `--lua-only`, `--no-publish`, or `copr.publish = false` prevent automatic publication and pending-publication recovery. `--no-publish` still builds and validates a fresh local stack.
+Complete-stack runs automatically publish only after local QA, all builds, runtime validation, and bundle integrity verification succeed. The manifest must use the current source policy and select Hyprland plus all configured companion applications. Submission is followed by local validation of the signed COPR candidates; only then is public metadata regenerated and checked for convergence. Any failed gate stops later phases. `--checks-only`, `--component`, `--lua-only`, `--no-publish`, or `copr.publish = false` prevent automatic publication and pending-publication recovery. `--no-publish` still builds and validates a fresh local stack.
 
 Each invocation creates a unique `dist/runs/<UTC-timestamp>-<unique-id>/` directory containing:
 * `logs/checks-image.log` and `logs/checks.log`.
@@ -276,3 +276,10 @@ python3 -m hyprland_copr verify dist/retry-RUN
 ```
 
 Blocked resolutions must be resolved again after their dependency issue is fixed; do not bypass their blocked status. Preserve the exact validated bundle, `.state/automation/publication.json`, `.state/copr.json`, and `.state/copr-candidates/` together. For automatically initiated publication, rerun `python3 -m ci.release` into a new run directory; it resumes the durable handoff. State from a manually initiated operation without a handoff blocks new automatic releases and requires explicit recovery. If using the raw phases and promotion is already pending, resume `copr-promote` directly rather than repeating earlier phases and discarding its validation receipt. An uncertain submission, incompatible live project policy, or repository change still requires operator reconciliation. Do not delete pending state merely to allow another submission. No hosted run IDs or artifact downloads are involved.
+
+Hyprland's `hyprland-dialog` runtime helper is supplied by the managed
+`hyprland-guiutils` companion. It is included in coordinated releases and can
+also be built with `run --component hyprland-guiutils --output dist/guiutils-NEW`.
+The Hyprland RPM requires it, so DNF installs it automatically. All five upstream
+utilities are packaged; isolated validation checks `hyprland-dialog --help`
+(including its reported version), installed assets, and ELF dependencies.

@@ -12,6 +12,7 @@ Source0:        hyprland-@VERSION@.tar.gz
 BuildRequires:  cmake-rpm-macros
 BuildRequires:  python3
 BuildRequires:  make
+Requires:       hyprland-guiutils
 Requires:       lua55-libs%{?_isa} >= 5.5
 Provides:       wayland-compositor
 Provides:       bundled(udis86) = @UDIS_VERSION@

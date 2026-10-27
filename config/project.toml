@@ -10,7 +10,7 @@ repositories = [
 ]
 
 [pipeline]
-release = 1
+release = 2
 max_candidates = 10
 state_directory = ".state"
 build_image = "hyprland-copr-builder:44"

@@ -480,6 +480,10 @@ def discover(source):
             managed="hyprland-protocols",
         ))
         requirements.append(Requirement("python3", origin="Required Lua stub generator"))
+        requirements.append(Requirement(
+            "/usr/bin/hyprland-dialog", origin="Hyprland runtime dialog dependency",
+            managed="hyprland-guiutils",
+        ))
     if name in (
         "hyprland", "aquamarine", "hyprpaper", "hyprlock", "hypridle",
         "hyprpicker", "hyprsunset",
